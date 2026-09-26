@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.KndTigui" parent="Theme.AppCompat.DayNight"/>
+</resources>
