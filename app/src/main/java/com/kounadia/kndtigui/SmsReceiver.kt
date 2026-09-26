@@ -32,20 +32,24 @@ class SmsReceiver : BroadcastReceiver() {
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        for (message in messages) {
-            val sender = message.originatingAddress ?: "INCONNU"
-            val body = message.messageBody ?: ""
-            val timestamp = message.timestampMillis
+        if (messages.isEmpty()) return
 
-            Log.i(TAG, "=== SMS DETECTE ===")
-            Log.i(TAG, "Expediteur: $sender")
-            Log.i(TAG, "Timestamp: $timestamp")
-            Log.i(TAG, "Contenu: $body")
+        // IMPORTANT : un SMS long est fragmente par le reseau en plusieurs
+        // SmsMessage distincts qui arrivent ensemble dans le meme intent.
+        // Il faut les reconcatener dans l'ordre avant de traiter le texte,
+        // sinon on perd des mots-cles (Trans id, montant) au milieu du SMS.
+        val sender = messages[0].originatingAddress ?: "INCONNU"
+        val timestamp = messages[0].timestampMillis
+        val fullBody = messages.joinToString(separator = "") { it.messageBody ?: "" }
 
-            saveDetectedSms(prefs, sender, body, timestamp)
+        Log.i(TAG, "=== SMS DETECTE (${messages.size} fragment(s) recombine(s)) ===")
+        Log.i(TAG, "Expediteur: $sender")
+        Log.i(TAG, "Timestamp: $timestamp")
+        Log.i(TAG, "Contenu complet: $fullBody")
 
-            Toast.makeText(context, "SMS detecte de: $sender", Toast.LENGTH_LONG).show()
-        }
+        saveDetectedSms(prefs, sender, fullBody, timestamp)
+
+        Toast.makeText(context, "SMS detecte de: $sender", Toast.LENGTH_LONG).show()
     }
 
     private fun saveDetectedSms(prefs: SharedPreferences, sender: String, body: String, timestamp: Long) {
