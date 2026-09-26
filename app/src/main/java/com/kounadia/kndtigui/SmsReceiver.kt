@@ -50,6 +50,18 @@ class SmsReceiver : BroadcastReceiver() {
         val timestamp = messages[0].timestampMillis
         val fullBody = messages.joinToString(separator = "") { it.messageBody ?: "" }
 
+        // Filtre de contenu : ne garder que les SMS de RECEPTION de paiement,
+        // pas les soldes, recharges credit, ou paiements EMIS (meme si envoyes
+        // par OrangeMoney). Les trois marqueurs doivent tous etre presents.
+        val looksLikePaymentReceived = fullBody.contains("Vous avez recu") &&
+            fullBody.contains("FCFA") &&
+            fullBody.contains("Trans id:")
+
+        if (!looksLikePaymentReceived) {
+            Log.i(TAG, "SMS ignore : ne correspond pas au format attendu de reception de paiement")
+            return
+        }
+
         Log.i(TAG, "=== SMS DETECTE (${messages.size} fragment(s) recombine(s)) ===")
         Log.i(TAG, "Expediteur: $sender")
         Log.i(TAG, "Timestamp: $timestamp")
