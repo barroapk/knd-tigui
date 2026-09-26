@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.text.format.DateFormat
-import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -39,11 +38,11 @@ class MainActivity : AppCompatActivity() {
 
         val refreshButton = Button(this)
         refreshButton.text = "Rafraichir la liste"
-        refreshButton.setOnClickListener { refreshSmsList() }
+        refreshButton.setOnClickListener { refreshList() }
         root.addView(refreshButton)
 
         val listLabel = TextView(this)
-        listLabel.text = "\nDerniers SMS detectes :"
+        listLabel.text = "\nEvenements de paiement detectes :"
         listLabel.textSize = 15f
         listLabel.setPadding(0, 30, 0, 10)
         root.addView(listLabel)
@@ -59,17 +58,17 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
 
         checkAndRequestPermissions()
-        refreshSmsList()
+        refreshList()
     }
 
     override fun onResume() {
         super.onResume()
-        refreshSmsList()
+        refreshList()
     }
 
-    private fun refreshSmsList() {
+    private fun refreshList() {
         val prefs = getSharedPreferences(SmsReceiver.PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(SmsReceiver.KEY_DETECTED_SMS, "[]") ?: "[]"
+        val raw = prefs.getString(SmsReceiver.KEY_PAYMENT_EVENTS, "[]") ?: "[]"
         val array = try {
             JSONArray(raw)
         } catch (e: Exception) {
@@ -77,22 +76,26 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (array.length() == 0) {
-            listText.text = "(aucun SMS detecte pour le moment)"
+            listText.text = "(aucun paiement detecte pour le moment)"
             return
         }
 
         val builder = StringBuilder()
         for (i in 0 until array.length()) {
             val entry = array.getJSONObject(i)
-            val sender = entry.optString("sender", "?")
-            val body = entry.optString("body", "")
+            val amount = entry.optDouble("amount", 0.0)
+            val senderPhone = entry.optString("senderPhone", "?")
+            val senderName = entry.optString("senderName", "?")
+            val transactionId = entry.optString("transactionId", "?")
+            val status = entry.optString("status", "?")
             val timestamp = entry.optLong("timestamp", 0L)
             val dateStr = DateFormat.format("dd/MM/yyyy HH:mm:ss", Date(timestamp))
 
-            builder.append("--- SMS #${i + 1} ---\n")
-            builder.append("De: $sender\n")
-            builder.append("Date: $dateStr\n")
-            builder.append("Contenu: $body\n\n")
+            builder.append("--- Paiement #${i + 1} [$status] ---\n")
+            builder.append("Montant: $amount FCFA\n")
+            builder.append("De: $senderPhone ($senderName)\n")
+            builder.append("Transaction: $transactionId\n")
+            builder.append("Date: $dateStr\n\n")
         }
 
         listText.text = builder.toString()
@@ -108,9 +111,9 @@ class MainActivity : AppCompatActivity() {
                 arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS),
                 SMS_PERMISSION_CODE
             )
-            statusText.text = "KND-Tigui v0.1\n\nDemande des permissions SMS en cours..."
+            statusText.text = "KND-Tigui v0.2\n\nDemande des permissions SMS en cours..."
         } else {
-            statusText.text = "KND-Tigui v0.1\n\n✅ Permissions SMS deja accordees.\nEn attente d'un SMS..."
+            statusText.text = "KND-Tigui v0.2\n\n✅ Permissions SMS deja accordees.\nEn attente d'un paiement..."
         }
     }
 
@@ -123,9 +126,9 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == SMS_PERMISSION_CODE) {
             val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
             statusText.text = if (allGranted) {
-                "KND-Tigui v0.1\n\n✅ Permissions accordees.\nEn attente d'un SMS..."
+                "KND-Tigui v0.2\n\n✅ Permissions accordees.\nEn attente d'un paiement..."
             } else {
-                "KND-Tigui v0.1\n\n❌ Permissions refusees.\nImpossible de detecter les SMS."
+                "KND-Tigui v0.2\n\n❌ Permissions refusees.\nImpossible de detecter les paiements."
             }
         }
     }

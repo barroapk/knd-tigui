@@ -11,17 +11,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Prototype v0.1 - detection uniquement. Rien n'est envoye a KND API.
- * Sauvegarde les 10 derniers SMS detectes dans SharedPreferences pour
- * affichage direct dans l'app (pas besoin de adb/logcat pour tester).
+ * Detecte les SMS Orange Money de RECEPTION de paiement, les parse
+ * localement, et les stocke comme evenements PENDING_SYNC en attente
+ * d'envoi vers KND API (etape suivante, pas encore implementee ici).
  */
 class SmsReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "KND-Tigui-SMS"
         const val PREFS_NAME = "knd_tigui_prefs"
-        const val KEY_DETECTED_SMS = "detected_sms"
-        const val MAX_STORED = 10
+        const val KEY_PAYMENT_EVENTS = "payment_events"
+        const val MAX_STORED = 20
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -30,18 +30,12 @@ class SmsReceiver : BroadcastReceiver() {
         }
 
         val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
         if (messages.isEmpty()) return
 
-        // IMPORTANT : un SMS long est fragmente par le reseau en plusieurs
-        // SmsMessage distincts qui arrivent ensemble dans le meme intent.
-        // Il faut les reconcatener dans l'ordre avant de traiter le texte,
-        // sinon on perd des mots-cles (Trans id, montant) au milieu du SMS.
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
         val sender = messages[0].originatingAddress ?: "INCONNU"
 
-        // Prototype : on ne conserve pour l'instant que les SMS
-        // provenant exactement de la source Orange Money.
         if (sender != "OrangeMoney") {
             Log.i(TAG, "SMS ignore : expediteur non autorise = $sender")
             return
@@ -50,9 +44,6 @@ class SmsReceiver : BroadcastReceiver() {
         val timestamp = messages[0].timestampMillis
         val fullBody = messages.joinToString(separator = "") { it.messageBody ?: "" }
 
-        // Filtre de contenu : ne garder que les SMS de RECEPTION de paiement,
-        // pas les soldes, recharges credit, ou paiements EMIS (meme si envoyes
-        // par OrangeMoney). Les trois marqueurs doivent tous etre presents.
         val looksLikePaymentReceived = fullBody.contains("Vous avez recu") &&
             fullBody.contains("FCFA") &&
             fullBody.contains("Trans id:")
@@ -62,37 +53,67 @@ class SmsReceiver : BroadcastReceiver() {
             return
         }
 
-        Log.i(TAG, "=== SMS DETECTE (${messages.size} fragment(s) recombine(s)) ===")
-        Log.i(TAG, "Expediteur: $sender")
-        Log.i(TAG, "Timestamp: $timestamp")
-        Log.i(TAG, "Contenu complet: $fullBody")
+        val parsed = OrangeMoneySmsParser.parse(fullBody)
+        if (parsed == null) {
+            Log.w(TAG, "SMS correspond au format mais le parsing a echoue : $fullBody")
+            return
+        }
 
-        saveDetectedSms(prefs, sender, fullBody, timestamp)
+        Log.i(TAG, "=== PAIEMENT PARSE ===")
+        Log.i(TAG, "Montant: ${parsed.amount}")
+        Log.i(TAG, "Expediteur: ${parsed.senderPhone} (${parsed.senderName})")
+        Log.i(TAG, "Transaction ID: ${parsed.transactionId}")
 
-        Toast.makeText(context, "SMS detecte de: $sender", Toast.LENGTH_LONG).show()
+        val wasNew = savePaymentEvent(prefs, parsed, timestamp)
+
+        if (wasNew) {
+            Toast.makeText(context, "Paiement detecte: ${parsed.amount} FCFA", Toast.LENGTH_LONG).show()
+        } else {
+            Log.i(TAG, "Transaction deja connue localement, ignoree : ${parsed.transactionId}")
+        }
     }
 
-    private fun saveDetectedSms(prefs: SharedPreferences, sender: String, body: String, timestamp: Long) {
-        val existing = prefs.getString(KEY_DETECTED_SMS, "[]") ?: "[]"
+    /**
+     * Retourne false si transactionId existe deja (idempotence locale) -
+     * garantit qu'un meme SMS recu deux fois (double reception reseau,
+     * reboot, etc.) ne cree jamais deux evenements distincts.
+     */
+    private fun savePaymentEvent(
+        prefs: SharedPreferences,
+        parsed: ParsedOrangeMoneyPayment,
+        timestamp: Long
+    ): Boolean {
+        val existing = prefs.getString(KEY_PAYMENT_EVENTS, "[]") ?: "[]"
         val array = try {
             JSONArray(existing)
         } catch (e: Exception) {
             JSONArray()
         }
 
-        val newEntry = JSONObject().apply {
-            put("sender", sender)
-            put("body", body)
-            put("timestamp", timestamp)
+        for (i in 0 until array.length()) {
+            val entry = array.getJSONObject(i)
+            if (entry.optString("transactionId") == parsed.transactionId) {
+                return false
+            }
         }
 
-        // Nouveau tableau : le plus recent en premier, limite a MAX_STORED
+        val newEntry = JSONObject().apply {
+            put("amount", parsed.amount)
+            put("senderPhone", parsed.senderPhone)
+            put("senderName", parsed.senderName)
+            put("newBalance", parsed.newBalance)
+            put("transactionId", parsed.transactionId)
+            put("timestamp", timestamp)
+            put("status", "PENDING_SYNC")
+        }
+
         val updated = JSONArray()
         updated.put(newEntry)
         for (i in 0 until minOf(array.length(), MAX_STORED - 1)) {
             updated.put(array.get(i))
         }
 
-        prefs.edit().putString(KEY_DETECTED_SMS, updated.toString()).apply()
+        prefs.edit().putString(KEY_PAYMENT_EVENTS, updated.toString()).apply()
+        return true
     }
 }
