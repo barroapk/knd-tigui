@@ -39,6 +39,14 @@ class SmsReceiver : BroadcastReceiver() {
         // Il faut les reconcatener dans l'ordre avant de traiter le texte,
         // sinon on perd des mots-cles (Trans id, montant) au milieu du SMS.
         val sender = messages[0].originatingAddress ?: "INCONNU"
+
+        // Prototype : on ne conserve pour l'instant que les SMS
+        // provenant exactement de la source Orange Money.
+        if (sender != "OrangeMoney") {
+            Log.i(TAG, "SMS ignore : expediteur non autorise = $sender")
+            return
+        }
+
         val timestamp = messages[0].timestampMillis
         val fullBody = messages.joinToString(separator = "") { it.messageBody ?: "" }
 
