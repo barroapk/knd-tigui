@@ -68,6 +68,9 @@ class SmsReceiver : BroadcastReceiver() {
 
         if (wasNew) {
             Toast.makeText(context, "Paiement detecte: ${parsed.amount} FCFA", Toast.LENGTH_LONG).show()
+            // Synchronisation en arriere-plan, portee Application (survit
+            // a la duree de vie courte de ce BroadcastReceiver).
+            (context.applicationContext as? KndTiguiApplication)?.triggerSync()
         } else {
             Log.i(TAG, "Transaction deja connue localement, ignoree : ${parsed.transactionId}")
         }
