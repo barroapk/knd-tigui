@@ -201,7 +201,7 @@ class ManagerActivity : AppCompatActivity() {
         sub.setPadding(0, dp(4), 0, dp(40))
         col.addView(sub)
 
-        val emailInput = field("Adresse email", false)
+        val emailInput = field("Nom d'utilisateur ou email", false)
         emailInput.setText(SessionStorage.getLastEmail(this) ?: "")
         col.addView(emailInput)
 
@@ -217,7 +217,7 @@ class ManagerActivity : AppCompatActivity() {
             val password = passwordInput.text.toString()
             if (email.isBlank() || password.isBlank()) {
                 messageText.setTextColor(Ui.ERROR)
-                messageText.text = "Email et mot de passe requis"
+                messageText.text = "Identifiant et mot de passe requis"
                 return@setOnClickListener
             }
             if (busy) return@setOnClickListener
@@ -845,7 +845,8 @@ class ManagerActivity : AppCompatActivity() {
         name.maxLines = 1
         name.ellipsize = TextUtils.TruncateAt.END
         mid.addView(name)
-        mid.addView(t(roleLabel(m.getString("role")), 12f, Ui.TEXT2))
+        val handle = str(m, "username")
+        mid.addView(t(roleLabel(m.getString("role")) + (if (handle.isEmpty()) "" else " · @$handle"), 12f, Ui.TEXT2))
         card.addView(mid, LinearLayout.LayoutParams(0, WRAP, 1f))
 
         card.addView(t(if (enabled) "● Actif" else "● Désactivé", 12f, if (enabled) Ui.SUCCESS else Ui.TEXT2, true))
@@ -873,6 +874,7 @@ class ManagerActivity : AppCompatActivity() {
                 this, "Compte",
                 listOf(
                     "Rôle" to roleLabel(m.getString("role")),
+                    "Nom d'utilisateur" to (if (str(m, "username").isEmpty()) "—" else str(m, "username")),
                     "Email" to m.getString("email"),
                     "Dernière connexion" to (if (lastLogin.isEmpty()) "Jamais" else longDate(lastLogin)),
                 ),
@@ -918,9 +920,11 @@ class ManagerActivity : AppCompatActivity() {
         content.addView(spacer(12))
 
         val nameInput = Ui.input(this, "Nom complet")
+        val usernameInput = Ui.input(this, "Nom d'utilisateur (ex : moussa)")
         val emailInput = Ui.input(this, "Adresse email", email = true)
         val passwordInput = Ui.input(this, "Mot de passe (8 caractères minimum)", password = true)
         content.addView(nameInput)
+        content.addView(usernameInput)
         content.addView(emailInput)
         content.addView(passwordInput)
 
@@ -936,25 +940,27 @@ class ManagerActivity : AppCompatActivity() {
         var sending = false
         content.addView(Ui.button(this, "Créer le compte") {
             val name = nameInput.text.toString().trim()
+            val username = usernameInput.text.toString().trim().lowercase()
             val email = emailInput.text.toString().trim()
             val password = passwordInput.text.toString()
-            if (name.isEmpty() || email.isEmpty() || password.length < 8) {
-                Toast.makeText(this, "Nom, email et mot de passe (8 caractères minimum) requis", Toast.LENGTH_LONG).show()
+            if (name.isEmpty() || username.length < 3 || email.isEmpty() || password.length < 8) {
+                Toast.makeText(this, "Nom, nom d'utilisateur (3 caractères minimum), email et mot de passe (8 caractères minimum) requis", Toast.LENGTH_LONG).show()
             } else if (!sending) {
                 sending = true
-                createManager(sheet, name, email, password, role) { sending = false }
+                createManager(sheet, name, username, email, password, role) { sending = false }
             }
         })
         sheet.show()
     }
 
-    private fun createManager(sheet: android.app.Dialog, name: String, email: String, password: String, role: String, onDone: () -> Unit) {
+    private fun createManager(sheet: android.app.Dialog, name: String, username: String, email: String, password: String, role: String, onDone: () -> Unit) {
         val token = SessionStorage.getToken(this) ?: return
         scope.launch {
             try {
                 val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
                 val body = JSONObject()
                     .put("displayName", name)
+                    .put("username", username)
                     .put("email", email)
                     .put("password", password)
                     .put("role", role)
