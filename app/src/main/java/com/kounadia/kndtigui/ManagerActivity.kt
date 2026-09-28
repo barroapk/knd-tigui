@@ -61,6 +61,9 @@ class ManagerActivity : AppCompatActivity() {
     private var deviceList = JSONArray()
     private var devicesLoaded = false
     private var devicesLoading = false
+    private var campaigns = JSONArray()
+    private var campaignsLoaded = false
+    private var campaignsLoading = false
     private var statusMessage = ""
     private var busy = false
 
@@ -630,6 +633,21 @@ class ManagerActivity : AppCompatActivity() {
             }
         }
 
+        sectionTitle(content, "Bonus")
+        content.addView(Ui.button(this, "Nouvelle campagne", "secondary") { showNewCampaignSheet() })
+        if (!campaignsLoaded && !campaignsLoading) loadCampaigns()
+        if (!campaignsLoaded) {
+            val loadingText = t("Chargement…", 13f, Ui.TEXT2)
+            loadingText.setPadding(0, dp(12), 0, 0)
+            content.addView(loadingText)
+        } else if (campaigns.length() == 0) {
+            emptyState(content, "Aucune campagne. Sans campagne active, il n'y a pas de bonus.")
+        } else {
+            for (i in 0 until minOf(campaigns.length(), 8)) {
+                content.addView(campaignCard(campaigns.getJSONObject(i)))
+            }
+        }
+
         sectionTitle(content, "Appareils")
         if (!devicesLoaded && !devicesLoading) loadDevices()
         if (!devicesLoaded) {
@@ -641,6 +659,218 @@ class ManagerActivity : AppCompatActivity() {
         } else {
             for (i in 0 until deviceList.length()) {
                 content.addView(deviceCard(deviceList.getJSONObject(i)))
+            }
+        }
+    }
+
+    private fun loadCampaigns() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (campaignsLoading) return
+        campaignsLoading = true
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                campaigns = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/admin/bonus", token))
+                }
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    campaignsLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+            } catch (e: Exception) {
+            }
+            campaignsLoaded = true
+            campaignsLoading = false
+            if (currentTab == Tab.ADMIN) renderTab()
+        }
+    }
+
+    private fun reloadCampaigns() {
+        campaignsLoaded = false
+        campaignsLoading = false
+        renderTab()
+    }
+
+    private fun campaignState(state: String): Pair<String, Int> = when (state) {
+        "RUNNING" -> Pair("En cours", Ui.SUCCESS)
+        "SCHEDULED" -> Pair("Programmée", Ui.WARNING)
+        "ENDED" -> Pair("Terminée", Ui.TEXT2)
+        else -> Pair("Inactive", Ui.TEXT2)
+    }
+
+    private fun isoUtc(ms: Long): String {
+        val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+        f.timeZone = TimeZone.getTimeZone("UTC")
+        return f.format(Date(ms))
+    }
+
+    private fun periodEndMs(period: String): Long {
+        val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC"))
+        if (period == "7d") {
+            return System.currentTimeMillis() + 7L * 24 * 60 * 60 * 1000
+        }
+        if (period == "month") {
+            cal.set(java.util.Calendar.DAY_OF_MONTH, cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH))
+        }
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 23)
+        cal.set(java.util.Calendar.MINUTE, 59)
+        cal.set(java.util.Calendar.SECOND, 59)
+        return cal.timeInMillis
+    }
+
+    private fun campaignCard(k: JSONObject): View {
+        val (label, color) = campaignState(k.getString("state"))
+        val card = cardShell(R.drawable.ic_percent, if (k.getString("state") == "RUNNING") Ui.SUCCESS else Ui.PRIMARY)
+
+        val mid = LinearLayout(this)
+        mid.orientation = LinearLayout.VERTICAL
+        mid.setPadding(dp(12), 0, dp(8), 0)
+        val name = t(k.getString("name"), 15f, Ui.TEXT, true)
+        name.maxLines = 1
+        name.ellipsize = TextUtils.TruncateAt.END
+        mid.addView(name)
+        mid.addView(t("${k.optDouble("percentage").toString().removeSuffix(".0")} % · jusqu'au ${shortDate(k.getString("endsAt")).substringBefore(' ')}", 12f, Ui.TEXT2))
+        card.addView(mid, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+        card.addView(t("● $label", 12f, color, true))
+        Ui.pressable(card) { showCampaignSheet(k) }
+        return card
+    }
+
+    private fun showCampaignSheet(k: JSONObject) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        val id = k.getString("id")
+        val state = k.getString("state")
+        val (label, color) = campaignState(state)
+
+        content.addView(centered(k.getString("name"), 20f, Ui.TEXT, true))
+        val pillWrap = LinearLayout(this)
+        pillWrap.gravity = Gravity.CENTER
+        pillWrap.setPadding(0, dp(10), 0, dp(4))
+        pillWrap.addView(Ui.pill(this, label, color))
+        content.addView(pillWrap, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        val maxBonus = if (k.isNull("maxBonus")) "Aucun" else fcfa(k.optDouble("maxBonus"))
+        content.addView(
+            Ui.section(
+                this, "Règles",
+                listOf(
+                    "Pourcentage" to (k.optDouble("percentage").toString().removeSuffix(".0") + " %"),
+                    "Dépôt minimum" to fcfa(k.optDouble("minDeposit")),
+                    "Bonus maximum" to maxBonus,
+                    "Début" to longDate(k.getString("startsAt")),
+                    "Fin" to longDate(k.getString("endsAt")),
+                ),
+            ),
+        )
+
+        if (state == "INACTIVE") {
+            content.addView(Ui.button(this, "Activer la campagne") {
+                sheet.dismiss()
+                campaignAction("/admin/bonus/$id/activate", "Campagne activée")
+            })
+        } else if (state == "RUNNING" || state == "SCHEDULED") {
+            content.addView(Ui.button(this, "Arrêter la campagne", "danger") {
+                sheet.dismiss()
+                campaignAction("/admin/bonus/$id/stop", "Campagne arrêtée")
+            })
+        }
+        sheet.show()
+    }
+
+    private fun campaignAction(path: String, okMessage: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                withContext(Dispatchers.IO) { ApiClient.request(base, "POST", path, token) }
+                Toast.makeText(this@ManagerActivity, okMessage, Toast.LENGTH_SHORT).show()
+                reloadCampaigns()
+            } catch (e: ApiException) {
+                handleApiError(e, true)
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showNewCampaignSheet() {
+        val (sheet, content) = Ui.bottomSheet(this)
+        sheet.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+
+        content.addView(centered("Nouvelle campagne de bonus", 20f, Ui.TEXT, true))
+        content.addView(spacer(12))
+
+        val nameInput = Ui.input(this, "Nom (ex : Bonus vendredi)")
+        val percentInput = Ui.input(this, "Pourcentage (ex : 10)")
+        val minInput = Ui.input(this, "Dépôt minimum en FCFA (facultatif)")
+        val maxInput = Ui.input(this, "Bonus maximum en FCFA (facultatif)")
+        val numeric = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+        percentInput.inputType = numeric
+        minInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        maxInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        content.addView(nameInput)
+        content.addView(percentInput)
+        content.addView(minInput)
+        content.addView(maxInput)
+
+        val periods = listOf("today" to "Aujourd'hui", "7d" to "7 jours", "month" to "Jusqu'à la fin du mois")
+        var periodIndex = 0
+        val periodView = t("Période : ${periods[0].second}  (appuyer pour changer)", 13f, Ui.PRIMARY, true)
+        periodView.setPadding(0, dp(4), 0, dp(4))
+        Ui.pressable(periodView) {
+            periodIndex = (periodIndex + 1) % periods.size
+            periodView.text = "Période : ${periods[periodIndex].second}  (appuyer pour changer)"
+        }
+        content.addView(periodView)
+
+        var sending = false
+        content.addView(Ui.button(this, "Créer et activer") {
+            val name = nameInput.text.toString().trim()
+            val percent = percentInput.text.toString().replace(',', '.').toDoubleOrNull()
+            val minDeposit = minInput.text.toString().trim().toLongOrNull() ?: 0L
+            val maxText = maxInput.text.toString().trim()
+            val maxBonus = if (maxText.isEmpty()) null else maxText.toLongOrNull()
+            if (name.isEmpty() || percent == null || percent <= 0 || percent > 100) {
+                Toast.makeText(this, "Nom et pourcentage (entre 0 et 100) requis", Toast.LENGTH_LONG).show()
+            } else if (maxText.isNotEmpty() && (maxBonus == null || maxBonus <= 0)) {
+                Toast.makeText(this, "Bonus maximum invalide", Toast.LENGTH_LONG).show()
+            } else if (!sending) {
+                sending = true
+                val now = System.currentTimeMillis()
+                val body = JSONObject()
+                    .put("name", name)
+                    .put("percentage", percent)
+                    .put("startsAt", isoUtc(now - 60000))
+                    .put("endsAt", isoUtc(periodEndMs(periods[periodIndex].first)))
+                    .put("minDeposit", minDeposit)
+                if (maxBonus != null) body.put("maxBonus", maxBonus)
+                createCampaign(sheet, body) { sending = false }
+            }
+        })
+        sheet.show()
+    }
+
+    private fun createCampaign(sheet: android.app.Dialog, body: JSONObject, onDone: () -> Unit) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                withContext(Dispatchers.IO) {
+                    val created = JSONObject(ApiClient.request(base, "POST", "/admin/bonus", token, body))
+                    ApiClient.request(base, "POST", "/admin/bonus/" + created.getString("id") + "/activate", token)
+                }
+                sheet.dismiss()
+                Toast.makeText(this@ManagerActivity, "Campagne créée et activée ✅", Toast.LENGTH_SHORT).show()
+                reloadCampaigns()
+            } catch (e: ApiException) {
+                onDone()
+                handleApiError(e, true)
+            } catch (e: Exception) {
+                onDone()
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_LONG).show()
             }
         }
     }
