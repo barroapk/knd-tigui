@@ -8,8 +8,8 @@ import java.net.URL
 class ApiException(val httpCode: Int, override val message: String) : Exception(message)
 
 /**
- * Appels HTTP vers KND API. Delais longs : le serveur Render (plan gratuit)
- * peut mettre jusqu'a une minute a se reveiller. A appeler hors thread principal.
+ * Appels HTTP vers KND API. A appeler hors thread principal.
+ * PATCH est envoye en POST + X-HTTP-Method-Override, corps compris.
  */
 object ApiClient {
     private const val TIMEOUT_MS = 60000
@@ -17,14 +17,18 @@ object ApiClient {
     fun request(baseUrl: String, method: String, path: String, token: String? = null, body: JSONObject? = null): String {
         val connection = URL(baseUrl + path).openConnection() as HttpURLConnection
         try {
-            connection.requestMethod = method
+            val sendsBody = method == "POST" || method == "PATCH"
+            connection.requestMethod = if (method == "PATCH") "POST" else method
+            if (method == "PATCH") {
+                connection.setRequestProperty("X-HTTP-Method-Override", "PATCH")
+            }
             connection.connectTimeout = TIMEOUT_MS
             connection.readTimeout = TIMEOUT_MS
             connection.setRequestProperty("Accept", "application/json")
             if (token != null) {
                 connection.setRequestProperty("Authorization", "Bearer $token")
             }
-            if (method == "POST") {
+            if (sendsBody) {
                 connection.setRequestProperty("Content-Type", "application/json")
                 connection.doOutput = true
                 val payload = (body ?: JSONObject()).toString()
@@ -41,6 +45,18 @@ object ApiClient {
             return text
         } finally {
             connection.disconnect()
+        }
+    }
+
+    /** Reveille le serveur (plan gratuit Render). */
+    fun warmUp(baseUrl: String) {
+        try {
+            val connection = URL("$baseUrl/").openConnection() as HttpURLConnection
+            connection.connectTimeout = TIMEOUT_MS
+            connection.readTimeout = TIMEOUT_MS
+            connection.responseCode
+            connection.disconnect()
+        } catch (e: Exception) {
         }
     }
 

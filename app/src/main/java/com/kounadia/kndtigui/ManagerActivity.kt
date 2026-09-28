@@ -327,10 +327,14 @@ class ManagerActivity : AppCompatActivity() {
                 badge.background = Ui.circle(Ui.ERROR)
                 iconBox.addView(badge, FrameLayout.LayoutParams(dp(16), dp(16), Gravity.TOP or Gravity.END))
             }
-            item.addView(iconBox, LinearLayout.LayoutParams(dp(36), dp(28)))
+            val iconParams = LinearLayout.LayoutParams(dp(36), dp(28))
+            iconParams.gravity = Gravity.CENTER_HORIZONTAL
+            item.addView(iconBox, iconParams)
             val labelView = t(tab.label, 11f, color, selected)
+            labelView.gravity = Gravity.CENTER
+            labelView.maxLines = 1
             labelView.setPadding(0, dp(2), 0, 0)
-            item.addView(labelView)
+            item.addView(labelView, LinearLayout.LayoutParams(MATCH, WRAP))
             item.setOnClickListener { setTab(tab) }
             row.addView(item, LinearLayout.LayoutParams(0, WRAP, 1f))
         }
