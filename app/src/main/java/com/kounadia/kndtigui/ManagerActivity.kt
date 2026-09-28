@@ -36,11 +36,11 @@ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 class ManagerActivity : AppCompatActivity() {
 
-    private enum class Tab(val label: String, val icon: String) {
-        HOME("Accueil", "⌂"),
-        QUEUE("À traiter", "↓"),
-        HISTORY("Historique", "≡"),
-        PAYMENTS("Paiements", "!"),
+    private enum class Tab(val label: String, val iconRes: Int) {
+        HOME("Accueil", R.drawable.ic_home),
+        QUEUE("À traiter", R.drawable.ic_inbox),
+        HISTORY("Historique", R.drawable.ic_history),
+        PAYMENTS("Paiements", R.drawable.ic_alert),
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -314,9 +314,21 @@ class ManagerActivity : AppCompatActivity() {
             item.orientation = LinearLayout.VERTICAL
             item.gravity = Gravity.CENTER
             item.setPadding(0, dp(10), 0, dp(10))
-            item.addView(t(tab.icon, 18f, color, selected))
-            val labelText = if (tab == Tab.QUEUE && toProcess > 0) "${tab.label} ($toProcess)" else tab.label
-            item.addView(t(labelText, 11f, color, selected))
+            val iconBox = FrameLayout(this)
+            val iv = android.widget.ImageView(this)
+            iv.setImageResource(tab.iconRes)
+            iv.setColorFilter(color)
+            iconBox.addView(iv, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+            if (tab == Tab.QUEUE && toProcess > 0) {
+                val badge = t(if (toProcess > 9) "9+" else toProcess.toString(), 10f, 0xFFFFFFFF.toInt(), true)
+                badge.gravity = Gravity.CENTER
+                badge.background = Ui.circle(Ui.ERROR)
+                iconBox.addView(badge, FrameLayout.LayoutParams(dp(16), dp(16), Gravity.TOP or Gravity.END))
+            }
+            item.addView(iconBox, LinearLayout.LayoutParams(dp(36), dp(28)))
+            val labelView = t(tab.label, 11f, color, selected)
+            labelView.setPadding(0, dp(2), 0, 0)
+            item.addView(labelView)
             item.setOnClickListener { setTab(tab) }
             row.addView(item, LinearLayout.LayoutParams(0, WRAP, 1f))
         }
@@ -365,10 +377,12 @@ class ManagerActivity : AppCompatActivity() {
         col.addView(t(subtitle, 13f, Ui.TEXT2))
         row.addView(col, LinearLayout.LayoutParams(0, WRAP, 1f))
 
-        val refresh = t("↻", 22f, Ui.TEXT2)
-        refresh.setPadding(dp(12), dp(8), dp(12), dp(8))
+        val refresh = android.widget.ImageView(this)
+        refresh.setImageResource(R.drawable.ic_refresh)
+        refresh.setColorFilter(Ui.TEXT2)
+        refresh.setPadding(dp(10), dp(10), dp(10), dp(10))
         Ui.pressable(refresh) { loadData(silent = false) }
-        row.addView(refresh)
+        row.addView(refresh, LinearLayout.LayoutParams(dp(44), dp(44)))
 
         val initial = (SessionStorage.getDisplayName(this) ?: "?").take(1).uppercase()
         val avatar = t(initial, 16f, Ui.PRIMARY, true)
@@ -535,15 +549,17 @@ class ManagerActivity : AppCompatActivity() {
 
     // ---------- cartes compactes ----------
 
-    private fun cardShell(iconText: String, iconColor: Int): LinearLayout {
+    private fun cardShell(iconRes: Int, iconColor: Int): LinearLayout {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.HORIZONTAL
         card.gravity = Gravity.CENTER_VERTICAL
         card.setPadding(dp(14), dp(14), dp(14), dp(14))
         card.background = Ui.rounded(this, Ui.SURFACE, 18, Ui.BORDER)
 
-        val icon = t(iconText, 18f, iconColor, true)
-        icon.gravity = Gravity.CENTER
+        val icon = android.widget.ImageView(this)
+        icon.setImageResource(iconRes)
+        icon.setColorFilter(iconColor)
+        icon.setPadding(dp(10), dp(10), dp(10), dp(10))
         icon.background = Ui.circle(Ui.withAlpha(iconColor, 0x26))
         card.addView(icon, LinearLayout.LayoutParams(dp(44), dp(44)))
 
@@ -555,7 +571,7 @@ class ManagerActivity : AppCompatActivity() {
 
     private fun depositCard(d: JSONObject): View {
         val (label, color) = Ui.statusInfo(d.getString("status"))
-        val card = cardShell("↓", Ui.PRIMARY)
+        val card = cardShell(R.drawable.ic_arrow_down, Ui.PRIMARY)
 
         val mid = LinearLayout(this)
         mid.orientation = LinearLayout.VERTICAL
@@ -588,7 +604,7 @@ class ManagerActivity : AppCompatActivity() {
     }
 
     private fun paymentCard(p: JSONObject): View {
-        val card = cardShell("!", Ui.WARNING)
+        val card = cardShell(R.drawable.ic_alert, Ui.WARNING)
 
         val mid = LinearLayout(this)
         mid.orientation = LinearLayout.VERTICAL
