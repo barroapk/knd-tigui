@@ -80,15 +80,35 @@ class ManagerActivity : AppCompatActivity() {
     private var busy = false
 
     companion object {
-        private const val POLL_INTERVAL_MS = 20000L
+        private const val POLL_INTERVAL_MS = 4000L
+        private const val SEARCH_DEBOUNCE_MS = 500L
     }
+
+    private var lastSeenSignature = ""
 
     private val pollRunnable = object : Runnable {
         override fun run() {
             if (SessionStorage.isLoggedIn(this@ManagerActivity) && navBar != null) {
-                loadData(silent = true)
+                checkForChanges()
             }
             handler.postDelayed(this, POLL_INTERVAL_MS)
+        }
+    }
+
+    private fun checkForChanges() {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                val sig = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "GET", "/manager/activity-signature", token)).optString("signature", "")
+                }
+                if (sig != lastSeenSignature) {
+                    lastSeenSignature = sig
+                    loadData(silent = true)
+                }
+            } catch (e: Exception) {
+            }
         }
     }
 
