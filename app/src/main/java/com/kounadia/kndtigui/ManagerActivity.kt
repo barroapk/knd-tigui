@@ -416,6 +416,12 @@ class ManagerActivity : AppCompatActivity() {
                 return true
             }
         })
+        if (currentTab == Tab.HISTORY) {
+            content.findViewWithTag<android.widget.EditText>("history_search")?.let { field ->
+                field.requestFocus()
+                field.setSelection(field.text.length)
+            }
+        }
     }
 
     // ---------- en-tete et composants de page ----------
@@ -577,6 +583,7 @@ class ManagerActivity : AppCompatActivity() {
 
         // Recherche
         val search = Ui.input(this, "Rechercher : référence, ID joueur, nom, gestionnaire")
+        search.tag = "history_search"
         search.setText(hQuery)
         search.setSelection(search.text.length)
         search.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
@@ -718,9 +725,7 @@ class ManagerActivity : AppCompatActivity() {
     private fun applyHistoryFilters() {
         hPage = 1
         hExtra.clear()
-        statusMessage = "Chargement…"
         forceRenderNext = true
-        renderTab()
         loadData(silent = true, force = true)
     }
 
