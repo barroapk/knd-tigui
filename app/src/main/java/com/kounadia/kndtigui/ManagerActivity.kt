@@ -3,13 +3,16 @@ package com.kounadia.kndtigui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
-import android.widget.Button
+import android.text.TextUtils
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -28,15 +31,30 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
 class ManagerActivity : AppCompatActivity() {
+
+    private enum class Tab(val label: String, val icon: String) {
+        HOME("Accueil", "⌂"),
+        QUEUE("À traiter", "↓"),
+        HISTORY("Historique", "≡"),
+        PAYMENTS("Paiements", "!"),
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val handler = Handler(Looper.getMainLooper())
-    private lateinit var container: LinearLayout
-    private var statusLine: TextView? = null
-    private var depositsContainer: LinearLayout? = null
-    private var unmatchedContainer: LinearLayout? = null
-    private var historyContainer: LinearLayout? = null
+    private lateinit var root: LinearLayout
+    private lateinit var body: FrameLayout
+    private var navBar: LinearLayout? = null
+    private var navRow: LinearLayout? = null
+    private var currentScroll: ScrollView? = null
+    private var currentTab = Tab.HOME
+    private var deposits = JSONArray()
+    private var unmatched = JSONArray()
+    private var history: JSONObject? = null
+    private var statusMessage = ""
     private var busy = false
 
     companion object {
@@ -45,8 +63,8 @@ class ManagerActivity : AppCompatActivity() {
 
     private val pollRunnable = object : Runnable {
         override fun run() {
-            if (SessionStorage.isLoggedIn(this@ManagerActivity)) {
-                loadWorkspace(silent = true)
+            if (SessionStorage.isLoggedIn(this@ManagerActivity) && navBar != null) {
+                loadData(silent = true)
             }
             handler.postDelayed(this, POLL_INTERVAL_MS)
         }
@@ -54,19 +72,23 @@ class ManagerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        container = LinearLayout(this)
-        container.orientation = LinearLayout.VERTICAL
-        container.setPadding(dp(16), dp(32), dp(16), dp(16))
-        val scroll = ScrollView(this)
-        scroll.addView(container)
-        setContentView(scroll)
-        showCurrentScreen()
+        root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(Ui.BG)
+        body = FrameLayout(this)
+        root.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        setContentView(root)
+
+        if (SessionStorage.isLoggedIn(this)) showApp() else showLogin(null)
     }
 
     override fun onResume() {
         super.onResume()
         handler.removeCallbacks(pollRunnable)
         handler.postDelayed(pollRunnable, POLL_INTERVAL_MS)
+        if (SessionStorage.isLoggedIn(this) && navBar != null) {
+            loadData(silent = true)
+        }
     }
 
     override fun onPause() {
@@ -80,40 +102,114 @@ class ManagerActivity : AppCompatActivity() {
         scope.cancel()
     }
 
-    // ---------- ecrans ----------
+    // ---------- petits utilitaires ----------
 
-    private fun showCurrentScreen() {
-        if (SessionStorage.isLoggedIn(this)) showWorkspace() else showLogin(null)
+    private fun dp(value: Int): Int = Ui.dp(this, value)
+
+    private fun t(value: String, size: Float = 14f, color: Int = Ui.TEXT, bold: Boolean = false): TextView =
+        Ui.text(this, value, size, color, bold)
+
+    private fun centered(value: String, size: Float, color: Int, bold: Boolean): TextView {
+        val v = t(value, size, color, bold)
+        v.gravity = Gravity.CENTER
+        v.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
+        return v
+    }
+
+    private fun str(o: JSONObject, key: String): String =
+        if (o.isNull(key)) "" else o.optString(key, "")
+
+    private fun fcfa(value: Double): String =
+        String.format(Locale.US, "%,d", value.toLong()).replace(',', ' ') + " FCFA"
+
+    private fun shortDate(iso: String): String =
+        if (iso.length >= 16) "${iso.substring(8, 10)}/${iso.substring(5, 7)} ${iso.substring(11, 16)}" else iso
+
+    private fun longDate(iso: String): String =
+        if (iso.length >= 16) "${iso.substring(8, 10)}/${iso.substring(5, 7)}/${iso.substring(0, 4)} ${iso.substring(11, 16)}" else iso
+
+    private fun dateOf(d: JSONObject): String {
+        val processed = str(d, "processedAt")
+        return if (processed.isNotEmpty()) processed else str(d, "createdAt")
+    }
+
+    /** Provisoire : affiche la partie avant @ de l'email, mise en forme, en attendant les vrais noms d'utilisateur. */
+    private fun who(raw: String): String {
+        if (raw.isBlank()) return "—"
+        return raw.substringBefore('@')
+            .split('.', '_', '-')
+            .filter { it.isNotEmpty() }
+            .joinToString(" ") { part -> part.replaceFirstChar { c -> c.uppercase() } }
+    }
+
+    private fun copy(label: String, value: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
+        Toast.makeText(this, "$label copié", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun spacer(heightDp: Int): View {
+        val v = View(this)
+        v.layoutParams = LinearLayout.LayoutParams(MATCH, dp(heightDp))
+        return v
+    }
+
+    // ---------- connexion ----------
+
+    private fun field(hint: String, password: Boolean): EditText {
+        val e = EditText(this)
+        e.hint = hint
+        e.setHintTextColor(Ui.TEXT2)
+        e.setTextColor(Ui.TEXT)
+        e.textSize = 15f
+        e.isSingleLine = true
+        e.inputType = if (password) {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        } else {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        }
+        e.background = Ui.rounded(this, Ui.SURFACE, 14, Ui.BORDER)
+        e.setPadding(dp(16), dp(14), dp(16), dp(14))
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(0, 0, 0, dp(12))
+        e.layoutParams = lp
+        return e
     }
 
     private fun showLogin(message: String?) {
-        container.removeAllViews()
-        statusLine = null
-        depositsContainer = null
-        unmatchedContainer = null
-        historyContainer = null
+        navBar?.let { root.removeView(it) }
+        navBar = null
+        navRow = null
+        currentScroll = null
+        body.removeAllViews()
 
-        container.addView(title("KND-Tigui — Espace Manager"))
-        container.addView(label("Connectez-vous avec votre compte Manager."))
+        val sv = ScrollView(this)
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(28), dp(96), dp(28), dp(32))
+        sv.addView(col)
 
-        val emailInput = EditText(this)
-        emailInput.hint = "Email"
-        emailInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        col.addView(t("KND-Tigui", 34f, Ui.TEXT, true))
+        val sub = t("Centre de gestion des opérations", 14f, Ui.TEXT2)
+        sub.setPadding(0, dp(4), 0, dp(40))
+        col.addView(sub)
+
+        val emailInput = field("Adresse email", false)
         emailInput.setText(SessionStorage.getLastEmail(this) ?: "")
-        container.addView(emailInput)
+        col.addView(emailInput)
 
-        val passwordInput = EditText(this)
-        passwordInput.hint = "Mot de passe"
-        passwordInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        container.addView(passwordInput)
+        val passwordInput = field("Mot de passe", true)
+        col.addView(passwordInput)
 
-        val messageText = label(message ?: "")
-        val loginButton = Button(this)
-        loginButton.text = "Se connecter"
+        val messageText = t(message ?: "", 13f, Ui.ERROR)
+        messageText.setPadding(0, dp(12), 0, 0)
+
+        val loginButton = Ui.button(this, "Se connecter") { }
         loginButton.setOnClickListener {
             val email = emailInput.text.toString().trim()
             val password = passwordInput.text.toString()
             if (email.isBlank() || password.isBlank()) {
+                messageText.setTextColor(Ui.ERROR)
                 messageText.text = "Email et mot de passe requis"
                 return@setOnClickListener
             }
@@ -121,14 +217,16 @@ class ManagerActivity : AppCompatActivity() {
 
             busy = true
             loginButton.isEnabled = false
-            messageText.text = "Connexion… (le serveur peut mettre jusqu'à 1 minute à se réveiller)"
+            loginButton.alpha = 0.5f
+            messageText.setTextColor(Ui.TEXT2)
+            messageText.text = "Connexion… le serveur peut mettre jusqu'à 1 minute à se réveiller."
 
             scope.launch {
                 try {
                     val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
-                    val body = JSONObject().put("email", email).put("password", password)
+                    val requestBody = JSONObject().put("email", email).put("password", password)
                     val response = withContext(Dispatchers.IO) {
-                        JSONObject(ApiClient.request(base, "POST", "/auth/manager/login", null, body))
+                        JSONObject(ApiClient.request(base, "POST", "/auth/manager/login", null, requestBody))
                     }
                     val manager = response.getJSONObject("manager")
                     SessionStorage.save(
@@ -140,79 +238,583 @@ class ManagerActivity : AppCompatActivity() {
                         manager.getString("role"),
                     )
                     busy = false
-                    showWorkspace()
+                    showApp()
                 } catch (e: ApiException) {
                     busy = false
                     passwordInput.setText("")
                     loginButton.isEnabled = true
+                    loginButton.alpha = 1f
+                    messageText.setTextColor(Ui.ERROR)
                     messageText.text = e.message
                 } catch (e: Exception) {
                     busy = false
                     loginButton.isEnabled = true
+                    loginButton.alpha = 1f
+                    messageText.setTextColor(Ui.ERROR)
                     messageText.text = "Serveur injoignable. Vérifiez la connexion et réessayez."
                 }
             }
         }
-        container.addView(loginButton)
-        container.addView(messageText)
+        col.addView(loginButton)
+        col.addView(messageText)
+
+        body.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
     }
 
-    private fun showWorkspace() {
-        container.removeAllViews()
-        val name = SessionStorage.getDisplayName(this) ?: "?"
-        val role = SessionStorage.getRole(this) ?: "?"
+    // ---------- application ----------
 
-        container.addView(title("Bonjour $name"))
-        container.addView(label("Rôle : $role"))
+    private fun showApp() {
+        currentTab = Tab.HOME
+        deposits = JSONArray()
+        unmatched = JSONArray()
+        history = null
+        statusMessage = ""
+        buildNav()
+        renderTab()
+        loadData(silent = false)
+    }
+
+    private fun buildNav() {
+        navBar?.let { root.removeView(it) }
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.VERTICAL
+        bar.setBackgroundColor(Ui.SURFACE)
+
+        val divider = View(this)
+        divider.setBackgroundColor(Ui.BORDER)
+        bar.addView(divider, LinearLayout.LayoutParams(MATCH, 1))
 
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        val weight = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        row.addView(button("Actualiser") { loadWorkspace(silent = false) }, weight)
-        row.addView(button("Déconnexion") {
+        bar.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        root.addView(bar, LinearLayout.LayoutParams(MATCH, WRAP))
+        navBar = bar
+        navRow = row
+        updateNav()
+    }
+
+    private fun countToProcess(): Int {
+        var n = 0
+        for (i in 0 until deposits.length()) {
+            if (deposits.getJSONObject(i).getString("status") == "PAYMENT_CONFIRMED") n++
+        }
+        return n
+    }
+
+    private fun updateNav() {
+        val row = navRow ?: return
+        row.removeAllViews()
+        val toProcess = countToProcess()
+
+        for (tab in Tab.values()) {
+            val selected = tab == currentTab
+            val color = if (selected) Ui.PRIMARY else Ui.TEXT2
+            val item = LinearLayout(this)
+            item.orientation = LinearLayout.VERTICAL
+            item.gravity = Gravity.CENTER
+            item.setPadding(0, dp(10), 0, dp(10))
+            item.addView(t(tab.icon, 18f, color, selected))
+            val labelText = if (tab == Tab.QUEUE && toProcess > 0) "${tab.label} ($toProcess)" else tab.label
+            item.addView(t(labelText, 11f, color, selected))
+            item.setOnClickListener { setTab(tab) }
+            row.addView(item, LinearLayout.LayoutParams(0, WRAP, 1f))
+        }
+    }
+
+    private fun setTab(tab: Tab) {
+        currentTab = tab
+        currentScroll = null
+        renderTab()
+        updateNav()
+    }
+
+    private fun renderTab() {
+        val previousScroll = currentScroll?.scrollY ?: 0
+        body.removeAllViews()
+
+        val sv = ScrollView(this)
+        sv.isVerticalScrollBarEnabled = false
+        val content = LinearLayout(this)
+        content.orientation = LinearLayout.VERTICAL
+        content.setPadding(dp(20), dp(20), dp(20), dp(28))
+        sv.addView(content)
+
+        when (currentTab) {
+            Tab.HOME -> buildHome(content)
+            Tab.QUEUE -> buildQueue(content)
+            Tab.HISTORY -> buildHistory(content)
+            Tab.PAYMENTS -> buildPayments(content)
+        }
+
+        body.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
+        currentScroll = sv
+        sv.post { sv.scrollTo(0, previousScroll) }
+    }
+
+    // ---------- en-tete et composants de page ----------
+
+    private fun header(content: LinearLayout, title: String, subtitle: String) {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(t(title, 26f, Ui.TEXT, true))
+        col.addView(t(subtitle, 13f, Ui.TEXT2))
+        row.addView(col, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+        val refresh = t("↻", 22f, Ui.TEXT2)
+        refresh.setPadding(dp(12), dp(8), dp(12), dp(8))
+        Ui.pressable(refresh) { loadData(silent = false) }
+        row.addView(refresh)
+
+        val initial = (SessionStorage.getDisplayName(this) ?: "?").take(1).uppercase()
+        val avatar = t(initial, 16f, Ui.PRIMARY, true)
+        avatar.gravity = Gravity.CENTER
+        avatar.background = Ui.circle(Ui.withAlpha(Ui.PRIMARY, 0x33))
+        Ui.pressable(avatar) { showProfileSheet() }
+        row.addView(avatar, LinearLayout.LayoutParams(dp(40), dp(40)))
+
+        content.addView(row)
+
+        if (statusMessage.isNotEmpty()) {
+            val status = t(statusMessage, 11f, Ui.TEXT2)
+            status.setPadding(0, dp(8), 0, 0)
+            content.addView(status)
+        }
+        content.addView(spacer(16))
+    }
+
+    private fun sectionTitle(content: LinearLayout, value: String) {
+        val v = t(value.uppercase(), 12f, Ui.TEXT2, true)
+        v.letterSpacing = 0.08f
+        v.setPadding(0, dp(24), 0, dp(8))
+        content.addView(v)
+    }
+
+    private fun linkText(content: LinearLayout, value: String, onClick: () -> Unit) {
+        val v = t(value, 13f, Ui.PRIMARY, true)
+        v.setPadding(0, dp(8), 0, dp(8))
+        Ui.pressable(v, onClick)
+        content.addView(v)
+    }
+
+    private fun emptyState(content: LinearLayout, value: String) {
+        val v = t(value, 14f, Ui.TEXT2)
+        v.gravity = Gravity.CENTER
+        v.setPadding(dp(16), dp(32), dp(16), dp(32))
+        v.background = Ui.rounded(this, Ui.SURFACE, 18, Ui.BORDER)
+        content.addView(v, LinearLayout.LayoutParams(MATCH, WRAP))
+    }
+
+    private fun statCard(label: String, big: String, sub: String, accent: Int): View {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.setPadding(dp(16), dp(16), dp(16), dp(16))
+        card.background = Ui.rounded(this, Ui.SURFACE, 18, Ui.BORDER)
+
+        val l = t(label, 11f, Ui.TEXT2, true)
+        l.letterSpacing = 0.08f
+        card.addView(l)
+
+        val b = t(big, 30f, accent, true)
+        b.setPadding(0, dp(8), 0, dp(2))
+        card.addView(b)
+
+        card.addView(t(sub, 12f, Ui.TEXT2))
+        return card
+    }
+
+    private fun statRow(content: LinearLayout, left: View, right: View) {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        val lp1 = LinearLayout.LayoutParams(0, WRAP, 1f)
+        lp1.setMargins(0, 0, dp(6), 0)
+        val lp2 = LinearLayout.LayoutParams(0, WRAP, 1f)
+        lp2.setMargins(dp(6), 0, 0, 0)
+        row.addView(left, lp1)
+        row.addView(right, lp2)
+        content.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+    }
+
+    // ---------- onglets ----------
+
+    private fun summaryCards(content: LinearLayout) {
+        var inProgress = 0
+        for (i in 0 until deposits.length()) {
+            if (deposits.getJSONObject(i).getString("status") == "PROCESSING") inProgress++
+        }
+        val toProcess = countToProcess()
+        val h = history
+        val todayCount = h?.optInt("todayCount") ?: 0
+        val todayTotal = h?.optDouble("todayTotal") ?: 0.0
+
+        val sub = if (inProgress > 0) "$inProgress en cours" else "à prendre en charge"
+        val accent = if (toProcess > 0) Ui.WARNING else Ui.TEXT
+        statRow(
+            content,
+            statCard("À TRAITER", toProcess.toString(), sub, accent),
+            statCard("CRÉDITÉS AUJOURD'HUI", todayCount.toString(), fcfa(todayTotal), Ui.SUCCESS),
+        )
+    }
+
+    private fun addDepositCards(content: LinearLayout, array: JSONArray, max: Int) {
+        val n = minOf(array.length(), max)
+        for (i in 0 until n) {
+            content.addView(depositCard(array.getJSONObject(i)))
+        }
+    }
+
+    private fun buildHome(content: LinearLayout) {
+        val name = SessionStorage.getDisplayName(this) ?: ""
+        val role = if (SessionStorage.getRole(this) == "ADMIN") "Administrateur" else "Gestionnaire"
+        header(content, "Bonjour, ${name.substringBefore(' ')}", role)
+        summaryCards(content)
+
+        if (deposits.length() > 0) {
+            sectionTitle(content, "À traiter maintenant")
+            addDepositCards(content, deposits, 3)
+            if (deposits.length() > 3) {
+                linkText(content, "Voir les ${deposits.length()} opérations") { setTab(Tab.QUEUE) }
+            }
+        }
+
+        sectionTitle(content, "Activité récente")
+        val items = history?.optJSONArray("items") ?: JSONArray()
+        if (items.length() == 0) {
+            emptyState(content, "Aucune opération pour le moment.")
+        } else {
+            addDepositCards(content, items, 5)
+            if (items.length() > 5) {
+                linkText(content, "Voir tout l'historique") { setTab(Tab.HISTORY) }
+            }
+        }
+    }
+
+    private fun buildQueue(content: LinearLayout) {
+        header(content, "À traiter", "${deposits.length()} opération(s)")
+        if (deposits.length() == 0) {
+            emptyState(content, "Aucun dépôt à traiter.\nLes nouveaux paiements apparaissent ici automatiquement.")
+        } else {
+            addDepositCards(content, deposits, deposits.length())
+        }
+    }
+
+    private fun buildHistory(content: LinearLayout) {
+        val subtitle = if (SessionStorage.getRole(this) == "ADMIN") "Tous les managers" else "Mes opérations"
+        header(content, "Historique", subtitle)
+        summaryCards(content)
+
+        val items = history?.optJSONArray("items") ?: JSONArray()
+        sectionTitle(content, "Dernières opérations")
+        if (history == null) {
+            emptyState(content, "Historique indisponible pour le moment.")
+        } else if (items.length() == 0) {
+            emptyState(content, "Aucun dépôt crédité pour le moment.")
+        } else {
+            addDepositCards(content, items, items.length())
+        }
+    }
+
+    private fun buildPayments(content: LinearLayout) {
+        header(content, "Paiements à vérifier", "${unmatched.length()} paiement(s)")
+        val note = t("Paiements reçus sans dépôt correspondant. Ne rien créditer sans vérification.", 13f, Ui.TEXT2)
+        note.setPadding(0, 0, 0, dp(8))
+        content.addView(note)
+
+        if (unmatched.length() == 0) {
+            emptyState(content, "Aucun paiement à vérifier.")
+        } else {
+            for (i in 0 until unmatched.length()) {
+                content.addView(paymentCard(unmatched.getJSONObject(i)))
+            }
+        }
+    }
+
+    // ---------- cartes compactes ----------
+
+    private fun cardShell(iconText: String, iconColor: Int): LinearLayout {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.HORIZONTAL
+        card.gravity = Gravity.CENTER_VERTICAL
+        card.setPadding(dp(14), dp(14), dp(14), dp(14))
+        card.background = Ui.rounded(this, Ui.SURFACE, 18, Ui.BORDER)
+
+        val icon = t(iconText, 18f, iconColor, true)
+        icon.gravity = Gravity.CENTER
+        icon.background = Ui.circle(Ui.withAlpha(iconColor, 0x26))
+        card.addView(icon, LinearLayout.LayoutParams(dp(44), dp(44)))
+
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(0, dp(6), 0, dp(6))
+        card.layoutParams = lp
+        return card
+    }
+
+    private fun depositCard(d: JSONObject): View {
+        val (label, color) = Ui.statusInfo(d.getString("status"))
+        val card = cardShell("↓", Ui.PRIMARY)
+
+        val mid = LinearLayout(this)
+        mid.orientation = LinearLayout.VERTICAL
+        mid.setPadding(dp(12), 0, dp(8), 0)
+        mid.addView(t("DÉPÔT", 10f, Ui.TEXT2, true))
+        val name = t(d.getString("playerName"), 15f, Ui.TEXT, true)
+        name.maxLines = 1
+        name.ellipsize = TextUtils.TruncateAt.END
+        mid.addView(name)
+        mid.addView(t(d.getString("reference"), 12f, Ui.TEXT2))
+        card.addView(mid, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+        val right = LinearLayout(this)
+        right.orientation = LinearLayout.VERTICAL
+        right.gravity = Gravity.END
+        right.addView(t(fcfa(d.optDouble("totalCredit")), 15f, Ui.TEXT, true))
+        right.addView(t("● $label", 12f, color, true))
+        right.addView(t(shortDate(dateOf(d)), 11f, Ui.TEXT2))
+        card.addView(right)
+
+        Ui.pressable(card) { showDepositSheet(d) }
+        return card
+    }
+
+    private fun reasonText(reason: String): String = when (reason) {
+        "after_cancel" -> "Reçu après l'annulation du dépôt"
+        "after_expiry" -> "Reçu après l'expiration du dépôt"
+        "ambiguous" -> "Plusieurs dépôts possibles"
+        else -> "Aucun dépôt correspondant"
+    }
+
+    private fun paymentCard(p: JSONObject): View {
+        val card = cardShell("!", Ui.WARNING)
+
+        val mid = LinearLayout(this)
+        mid.orientation = LinearLayout.VERTICAL
+        mid.setPadding(dp(12), 0, dp(8), 0)
+        mid.addView(t("PAIEMENT ORANGE MONEY", 10f, Ui.TEXT2, true))
+        mid.addView(t(p.optString("senderPhone"), 15f, Ui.TEXT, true))
+        val reason = t(reasonText(str(p, "lateMatchReason")), 12f, Ui.TEXT2)
+        reason.maxLines = 1
+        reason.ellipsize = TextUtils.TruncateAt.END
+        mid.addView(reason)
+        card.addView(mid, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+        val right = LinearLayout(this)
+        right.orientation = LinearLayout.VERTICAL
+        right.gravity = Gravity.END
+        right.addView(t(fcfa(p.optDouble("amount")), 15f, Ui.TEXT, true))
+        right.addView(t("● À vérifier", 12f, Ui.WARNING, true))
+        right.addView(t(shortDate(str(p, "receivedAt")), 11f, Ui.TEXT2))
+        card.addView(right)
+
+        Ui.pressable(card) { showPaymentSheet(p) }
+        return card
+    }
+
+    // ---------- fiches detaillees ----------
+
+    private fun showDepositSheet(d: JSONObject) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        val id = d.getString("id")
+        val status = d.getString("status")
+        val playerId = d.getString("playerId")
+        val playerName = d.getString("playerName")
+        val total = d.optDouble("totalCredit")
+        val bonus = d.optDouble("bonusAmount")
+        val bonusPct = d.optDouble("bonusPercentage")
+        val owner = str(d, "processedBy")
+        val ownerId = str(d, "processedByManagerId")
+        val myId = SessionStorage.getManagerId(this) ?: ""
+        val isMine = ownerId.isNotEmpty() && ownerId == myId
+        val isAdmin = SessionStorage.getRole(this) == "ADMIN"
+        val (label, color) = Ui.statusInfo(status)
+        val payment = d.optJSONObject("payment")
+
+        content.addView(centered("DÉPÔT 1XBET", 12f, Ui.TEXT2, true))
+        content.addView(centered("+ ${fcfa(total)}", 30f, Ui.TEXT, true))
+
+        val pillWrap = LinearLayout(this)
+        pillWrap.gravity = Gravity.CENTER
+        pillWrap.setPadding(0, dp(10), 0, dp(4))
+        pillWrap.addView(Ui.pill(this, label, color))
+        content.addView(pillWrap, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        content.addView(
+            Ui.section(
+                this, "Joueur",
+                listOf("Nom" to playerName, "ID 1xBet" to playerId),
+                setOf("ID 1xBet"),
+            ) { l, v -> copy(l, v) },
+        )
+
+        val amountRows = mutableListOf("Dépôt" to fcfa(d.optDouble("amount")))
+        if (bonus > 0) amountRows.add("Bonus (${bonusPct.toInt()} %)" to fcfa(bonus))
+        amountRows.add("Crédit total" to fcfa(total))
+        content.addView(Ui.section(this, "Montants", amountRows))
+
+        if (payment != null) {
+            content.addView(
+                Ui.section(
+                    this, "Paiement Orange Money",
+                    listOf(
+                        "Montant reçu" to fcfa(payment.optDouble("amount")),
+                        "Téléphone" to payment.optString("senderPhone"),
+                        "Transaction" to payment.optString("transactionId"),
+                    ),
+                    setOf("Transaction"),
+                ) { l, v -> copy(l, v) },
+            )
+        }
+
+        val processingRows = mutableListOf("Référence" to d.getString("reference"))
+        if (owner.isNotEmpty()) {
+            val role = if (status == "SUCCESS") "Traité par" else "Pris en charge par"
+            processingRows.add(role to who(owner))
+        }
+        val processedAt = str(d, "processedAt")
+        if (processedAt.isNotEmpty()) {
+            processingRows.add("Traité le" to longDate(processedAt))
+        } else {
+            processingRows.add("Créé le" to longDate(str(d, "createdAt")))
+        }
+        content.addView(Ui.section(this, "Traitement", processingRows))
+
+        if (status == "PAYMENT_CONFIRMED") {
+            content.addView(Ui.button(this, "Prendre en charge") {
+                sheet.dismiss()
+                runAction("/manager/deposits/$id/claim", "Dépôt pris en charge")
+            })
+        } else if (status == "PROCESSING") {
+            if (isMine) {
+                content.addView(Ui.button(this, "Copier le montant à créditer", "secondary") {
+                    copy("Montant", total.toLong().toString())
+                })
+                content.addView(Ui.button(this, "Crédit effectué") {
+                    confirmComplete(sheet, id, playerId, playerName, total)
+                })
+                content.addView(Ui.button(this, "Libérer", "secondary") {
+                    confirmRelease(sheet, id, false)
+                })
+            } else if (isAdmin) {
+                content.addView(Ui.button(this, "Libérer (admin)", "danger") {
+                    confirmRelease(sheet, id, true)
+                })
+            }
+        }
+
+        sheet.show()
+    }
+
+    private fun showPaymentSheet(p: JSONObject) {
+        val (sheet, content) = Ui.bottomSheet(this)
+
+        content.addView(centered("PAIEMENT À VÉRIFIER", 12f, Ui.TEXT2, true))
+        content.addView(centered(fcfa(p.optDouble("amount")), 30f, Ui.TEXT, true))
+
+        val pillWrap = LinearLayout(this)
+        pillWrap.gravity = Gravity.CENTER
+        pillWrap.setPadding(0, dp(10), 0, dp(4))
+        pillWrap.addView(Ui.pill(this, "À vérifier", Ui.WARNING))
+        content.addView(pillWrap, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        content.addView(
+            Ui.section(
+                this, "Paiement Orange Money",
+                listOf(
+                    "Téléphone" to p.optString("senderPhone"),
+                    "Nom" to p.optString("senderName").ifEmpty { "—" },
+                    "Transaction" to p.optString("transactionId"),
+                    "Reçu le" to longDate(str(p, "receivedAt")),
+                ),
+                setOf("Transaction"),
+            ) { l, v -> copy(l, v) },
+        )
+
+        val analysis = mutableListOf("Motif" to reasonText(str(p, "lateMatchReason")))
+        val linked = p.optJSONObject("linkedDeposit")
+        if (linked != null) {
+            analysis.add("Dépôt lié" to linked.optString("reference"))
+            analysis.add("Statut du dépôt" to Ui.statusInfo(linked.optString("status")).first)
+            analysis.add("Joueur" to linked.optString("playerName"))
+        }
+        content.addView(Ui.section(this, "Analyse", analysis))
+
+        val note = t("Aucun crédit automatique. Vérifiez avec le client avant toute action.", 13f, Ui.TEXT2)
+        note.setPadding(0, dp(16), 0, 0)
+        content.addView(note)
+
+        sheet.show()
+    }
+
+    private fun showProfileSheet() {
+        val (sheet, content) = Ui.bottomSheet(this)
+        val name = SessionStorage.getDisplayName(this) ?: "?"
+        val role = if (SessionStorage.getRole(this) == "ADMIN") "Administrateur" else "Gestionnaire"
+
+        content.addView(centered(name, 22f, Ui.TEXT, true))
+        content.addView(centered(role, 13f, Ui.TEXT2, false))
+        content.addView(
+            Ui.section(
+                this, "Compte",
+                listOf("Rôle" to role, "Email" to (SessionStorage.getLastEmail(this) ?: "—")),
+            ),
+        )
+        content.addView(Ui.button(this, "Se déconnecter", "danger") {
+            sheet.dismiss()
             SessionStorage.clear(this)
             showLogin(null)
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        container.addView(row)
+        })
+        sheet.show()
+    }
 
-        val status = label("")
-        statusLine = status
-        container.addView(status)
+    // ---------- confirmations ----------
 
-        container.addView(title("Dépôts à traiter", 16f))
-        val deposits = LinearLayout(this)
-        deposits.orientation = LinearLayout.VERTICAL
-        depositsContainer = deposits
-        container.addView(deposits)
+    private fun confirmComplete(sheet: android.app.Dialog, id: String, playerId: String, playerName: String, total: Double) {
+        AlertDialog.Builder(this)
+            .setTitle("Confirmer le crédit")
+            .setMessage("Avez-vous bien crédité ${fcfa(total)} sur le compte 1xBet $playerId ($playerName) dans MobCash ?")
+            .setPositiveButton("Oui, crédit effectué") { _, _ ->
+                sheet.dismiss()
+                runAction("/manager/deposits/$id/complete", "Dépôt clôturé")
+            }
+            .setNegativeButton("Non", null)
+            .show()
+    }
 
-        container.addView(title("Paiements à vérifier", 16f))
-        container.addView(label("Paiements reçus sans dépôt correspondant. Ne rien créditer sans vérification."))
-        val unmatched = LinearLayout(this)
-        unmatched.orientation = LinearLayout.VERTICAL
-        unmatchedContainer = unmatched
-        container.addView(unmatched)
-
-        container.addView(title(if (role == "ADMIN") "Historique (tous les managers)" else "Mon historique", 16f))
-        val history = LinearLayout(this)
-        history.orientation = LinearLayout.VERTICAL
-        historyContainer = history
-        container.addView(history)
-
-        loadWorkspace(silent = false)
+    private fun confirmRelease(sheet: android.app.Dialog, id: String, adminOverride: Boolean) {
+        val message = if (adminOverride) {
+            "Vérifiez dans MobCash que ce dépôt n'a PAS déjà été crédité avant de le libérer, sinon il pourrait être crédité deux fois. Libérer ce dépôt ?"
+        } else {
+            "Le dépôt retournera dans la file et un collègue pourra le prendre. Continuer ?"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Libérer le dépôt")
+            .setMessage(message)
+            .setPositiveButton("Libérer") { _, _ ->
+                sheet.dismiss()
+                runAction("/manager/deposits/$id/release", "Dépôt libéré")
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
     }
 
     // ---------- chargement et actions ----------
 
-    private fun loadWorkspace(silent: Boolean) {
+    private fun loadData(silent: Boolean) {
         if (busy) return
         val token = SessionStorage.getToken(this) ?: return
         busy = true
-        if (!silent) setStatus("Chargement… (le serveur peut mettre jusqu'à 1 minute à se réveiller)")
+        if (!silent) {
+            statusMessage = "Chargement… le serveur peut mettre jusqu'à 1 minute à se réveiller."
+            renderTab()
+        }
 
         scope.launch {
             try {
                 val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
-                val (deposits, unmatched, history) = withContext(Dispatchers.IO) {
+                val result = withContext(Dispatchers.IO) {
                     val d = JSONArray(ApiClient.request(base, "GET", "/manager/deposits", token))
                     val u = JSONArray(ApiClient.request(base, "GET", "/manager/payments/unmatched", token))
                     val h: JSONObject? = try {
@@ -222,14 +824,17 @@ class ManagerActivity : AppCompatActivity() {
                     }
                     Triple(d, u, h)
                 }
-                renderDeposits(deposits)
-                renderUnmatched(unmatched)
-                renderHistory(history)
-                setStatus("Mis à jour à " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()))
+                deposits = result.first
+                unmatched = result.second
+                history = result.third
+                statusMessage = "Mis à jour à " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+                renderTab()
+                updateNav()
             } catch (e: ApiException) {
                 handleApiError(e, false)
             } catch (e: Exception) {
-                setStatus("Serveur injoignable. Nouvel essai automatique dans quelques secondes.")
+                statusMessage = "Serveur injoignable. Nouvel essai automatique dans quelques secondes."
+                renderTab()
             } finally {
                 busy = false
             }
@@ -240,7 +845,8 @@ class ManagerActivity : AppCompatActivity() {
         if (busy) return
         val token = SessionStorage.getToken(this) ?: return
         busy = true
-        setStatus("Envoi…")
+        statusMessage = "Envoi…"
+        renderTab()
 
         scope.launch {
             try {
@@ -248,14 +854,15 @@ class ManagerActivity : AppCompatActivity() {
                 withContext(Dispatchers.IO) { ApiClient.request(base, "POST", path, token) }
                 busy = false
                 Toast.makeText(this@ManagerActivity, successMessage, Toast.LENGTH_SHORT).show()
-                loadWorkspace(silent = false)
+                loadData(silent = false)
             } catch (e: ApiException) {
                 busy = false
                 handleApiError(e, true)
-                loadWorkspace(silent = true)
+                loadData(silent = true)
             } catch (e: Exception) {
                 busy = false
-                setStatus("Serveur injoignable. Réessayez.")
+                statusMessage = "Serveur injoignable. Réessayez."
+                renderTab()
             }
         }
     }
@@ -266,7 +873,8 @@ class ManagerActivity : AppCompatActivity() {
             showLogin("Session expirée. Reconnectez-vous.")
             return
         }
-        setStatus("⚠️ ${e.message}")
+        statusMessage = "⚠️ ${e.message}"
+        renderTab()
         if (showDialog) {
             AlertDialog.Builder(this)
                 .setTitle("Action impossible")
@@ -274,250 +882,5 @@ class ManagerActivity : AppCompatActivity() {
                 .setPositiveButton("OK", null)
                 .show()
         }
-    }
-
-    // ---------- affichage des listes ----------
-
-    private fun renderDeposits(array: JSONArray) {
-        val target = depositsContainer ?: return
-        target.removeAllViews()
-
-        if (array.length() == 0) {
-            target.addView(label("Aucun dépôt à traiter pour le moment."))
-            return
-        }
-
-        val myId = SessionStorage.getManagerId(this) ?: ""
-        val isAdmin = SessionStorage.getRole(this) == "ADMIN"
-
-        for (i in 0 until array.length()) {
-            val d = array.getJSONObject(i)
-            val id = d.getString("id")
-            val status = d.getString("status")
-            val owner = str(d, "processedBy")
-            val ownerId = str(d, "processedByManagerId")
-            val isMine = ownerId.isNotEmpty() && ownerId == myId
-            val totalCredit = d.optDouble("totalCredit")
-            val bonusAmount = d.optDouble("bonusAmount")
-            val playerId = d.getString("playerId")
-            val playerName = d.getString("playerName")
-            val payment = d.optJSONObject("payment")
-
-            val card = LinearLayout(this)
-            card.orientation = LinearLayout.VERTICAL
-            card.setPadding(dp(12), dp(12), dp(12), dp(12))
-            card.setBackgroundColor(0x1A808080)
-
-            val text = StringBuilder()
-            text.append(d.getString("reference")).append("\n")
-            text.append("Joueur : $playerName\n")
-            text.append("ID 1xBet : $playerId\n")
-            text.append("Dépôt : ${fcfa(d.optDouble("amount"))}\n")
-            if (bonusAmount > 0) text.append("Bonus : ${fcfa(bonusAmount)}\n")
-            text.append("TOTAL À CRÉDITER : ${fcfa(totalCredit)}\n")
-            if (payment != null) {
-                text.append("Paiement Orange : ${payment.optString("transactionId")} de ${payment.optString("senderPhone")}\n")
-            }
-            text.append(
-                when (status) {
-                    "PAYMENT_CONFIRMED" -> "💰 Payé — à créditer"
-                    "PROCESSING" ->
-                        if (isMine) "✋ Pris en charge par vous"
-                        else "🔒 Pris en charge par ${owner.ifEmpty { "un collègue" }}"
-                    else -> status
-                }
-            )
-            card.addView(label(text.toString()))
-
-            if (status == "PAYMENT_CONFIRMED") {
-                card.addView(button("PRENDRE EN CHARGE") {
-                    runAction("/manager/deposits/$id/claim", "Dépôt pris en charge")
-                })
-            } else if (status == "PROCESSING") {
-                if (isMine) {
-                    card.addView(button("Copier l'ID 1xBet") { copyToClipboard("ID 1xBet", playerId) })
-                    card.addView(button("Copier le montant à créditer") {
-                        copyToClipboard("Montant", totalCredit.toLong().toString())
-                    })
-                    card.addView(button("CRÉDIT EFFECTUÉ") { confirmComplete(id, playerId, playerName, totalCredit) })
-                    card.addView(button("Libérer") { confirmRelease(id, false) })
-                } else if (isAdmin) {
-                    card.addView(button("Libérer (admin)") { confirmRelease(id, true) })
-                }
-            }
-
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            params.setMargins(0, dp(8), 0, dp(8))
-            target.addView(card, params)
-        }
-    }
-
-    private fun renderHistory(history: JSONObject?) {
-        val target = historyContainer ?: return
-        target.removeAllViews()
-
-        if (history == null) {
-            target.addView(label("Historique indisponible pour le moment."))
-            return
-        }
-
-        val items = history.optJSONArray("items") ?: JSONArray()
-        val summary = "Aujourd'hui : ${history.optInt("todayCount")} dépôt(s) crédité(s) — ${fcfa(history.optDouble("todayTotal"))}"
-        target.addView(label(summary, 15f))
-
-        if (items.length() == 0) {
-            target.addView(label("Aucun dépôt crédité pour le moment."))
-            return
-        }
-
-        for (i in 0 until items.length()) {
-            val d = items.getJSONObject(i)
-            val payment = d.optJSONObject("payment")
-            val bonusAmount = d.optDouble("bonusAmount")
-
-            val text = StringBuilder()
-            text.append(d.getString("reference")).append("\n")
-            text.append("Joueur : ${d.getString("playerName")} (${d.getString("playerId")})\n")
-            text.append("Crédité : ${fcfa(d.optDouble("totalCredit"))}")
-            if (bonusAmount > 0) text.append(" (dont bonus ${fcfa(bonusAmount)})")
-            text.append("\n")
-            if (payment != null) {
-                text.append("Paiement Orange : ${payment.optString("transactionId")}\n")
-            }
-            text.append("✅ Par ${str(d, "processedBy").ifEmpty { "?" }} le ${shortTime(str(d, "processedAt"))}")
-
-            val card = LinearLayout(this)
-            card.orientation = LinearLayout.VERTICAL
-            card.setPadding(dp(12), dp(12), dp(12), dp(12))
-            card.setBackgroundColor(0x1A4CAF50)
-            card.addView(label(text.toString()))
-
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            params.setMargins(0, dp(8), 0, dp(8))
-            target.addView(card, params)
-        }
-    }
-
-    private fun renderUnmatched(array: JSONArray) {
-        val target = unmatchedContainer ?: return
-        target.removeAllViews()
-
-        if (array.length() == 0) {
-            target.addView(label("Aucun paiement à vérifier."))
-            return
-        }
-
-        for (i in 0 until array.length()) {
-            val p = array.getJSONObject(i)
-            val reasonText = when (str(p, "lateMatchReason")) {
-                "after_cancel" -> "Reçu après l'annulation du dépôt"
-                "after_expiry" -> "Reçu après l'expiration du dépôt"
-                "ambiguous" -> "Plusieurs dépôts possibles"
-                else -> "Aucun dépôt correspondant"
-            }
-            val linked = p.optJSONObject("linkedDeposit")
-
-            val text = StringBuilder()
-            text.append("${fcfa(p.optDouble("amount"))} de ${p.optString("senderPhone")}\n")
-            text.append("Transaction : ${p.optString("transactionId")}\n")
-            text.append("Reçu : ${shortTime(str(p, "receivedAt"))}\n")
-            text.append(reasonText)
-            if (linked != null) {
-                text.append("\nDépôt lié : ${linked.optString("reference")} (${linked.optString("status")})")
-            }
-
-            val card = LinearLayout(this)
-            card.orientation = LinearLayout.VERTICAL
-            card.setPadding(dp(12), dp(12), dp(12), dp(12))
-            card.setBackgroundColor(0x1AFF9800)
-            card.addView(label(text.toString()))
-
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            )
-            params.setMargins(0, dp(8), 0, dp(8))
-            target.addView(card, params)
-        }
-    }
-
-    // ---------- dialogues et utilitaires ----------
-
-    private fun confirmComplete(id: String, playerId: String, playerName: String, total: Double) {
-        AlertDialog.Builder(this)
-            .setTitle("Confirmer le crédit")
-            .setMessage("Avez-vous bien crédité ${fcfa(total)} sur le compte 1xBet $playerId ($playerName) dans MobCash ?")
-            .setPositiveButton("Oui, crédit effectué") { _, _ ->
-                runAction("/manager/deposits/$id/complete", "Dépôt clôturé ✅")
-            }
-            .setNegativeButton("Non", null)
-            .show()
-    }
-
-    private fun confirmRelease(id: String, adminOverride: Boolean) {
-        val message = if (adminOverride) {
-            "Vérifiez dans MobCash que ce dépôt n'a PAS déjà été crédité avant de le libérer, sinon il pourrait être crédité deux fois. Libérer ce dépôt ?"
-        } else {
-            "Le dépôt retournera dans la file et un collègue pourra le prendre. Continuer ?"
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Libérer le dépôt")
-            .setMessage(message)
-            .setPositiveButton("Libérer") { _, _ ->
-                runAction("/manager/deposits/$id/release", "Dépôt libéré")
-            }
-            .setNegativeButton("Annuler", null)
-            .show()
-    }
-
-    private fun copyToClipboard(label: String, value: String) {
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
-        Toast.makeText(this, "$label copié", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun setStatus(text: String) {
-        statusLine?.text = text
-    }
-
-    private fun str(o: JSONObject, key: String): String =
-        if (o.isNull(key)) "" else o.optString(key, "")
-
-    private fun fcfa(value: Double): String =
-        String.format(Locale.US, "%,d", value.toLong()).replace(',', ' ') + " FCFA"
-
-    private fun shortTime(iso: String): String =
-        if (iso.length >= 16) iso.substring(0, 16).replace('T', ' ') else iso
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    private fun title(text: String, size: Float = 20f): TextView {
-        val view = TextView(this)
-        view.text = text
-        view.textSize = size
-        view.setTypeface(null, Typeface.BOLD)
-        view.setPadding(0, dp(12), 0, dp(6))
-        return view
-    }
-
-    private fun label(text: String, size: Float = 14f): TextView {
-        val view = TextView(this)
-        view.text = text
-        view.textSize = size
-        view.setPadding(0, dp(4), 0, dp(4))
-        return view
-    }
-
-    private fun button(text: String, onClick: () -> Unit): Button {
-        val view = Button(this)
-        view.text = text
-        view.setOnClickListener { onClick() }
-        return view
     }
 }
