@@ -2,6 +2,7 @@ package com.kounadia.kndtigui
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.text.InputType
@@ -42,15 +43,21 @@ class MainActivity : AppCompatActivity() {
         statusText.setPadding(0, 0, 0, 30)
         root.addView(statusText)
 
-        // --- Section configuration serveur ---
+        val managerButton = Button(this)
+        managerButton.text = "Espace Manager"
+        managerButton.setOnClickListener {
+            startActivity(Intent(this, ManagerActivity::class.java))
+        }
+        root.addView(managerButton)
+
         val configLabel = TextView(this)
-        configLabel.text = "Configuration serveur"
+        configLabel.text = "\nConfiguration serveur (réception des SMS)"
         configLabel.textSize = 15f
         configLabel.setPadding(0, 20, 0, 10)
         root.addView(configLabel)
 
         urlInput = EditText(this)
-        urlInput.hint = "URL API (ex: https://knd-api-xxxx.onrender.com)"
+        urlInput.hint = "URL API"
         root.addView(urlInput)
 
         tokenInput = EditText(this)
@@ -73,7 +80,6 @@ class MainActivity : AppCompatActivity() {
         syncButton.setOnClickListener { triggerManualSync() }
         root.addView(syncButton)
 
-        // --- Section liste des paiements (inchangee) ---
         val refreshButton = Button(this)
         refreshButton.text = "Rafraichir la liste"
         refreshButton.setOnClickListener { refreshList() }
@@ -107,18 +113,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadConfigIntoFields() {
-        val savedUrl = ConfigStorage.getApiBaseUrl(this)
-        if (savedUrl != null) {
-            urlInput.setText(savedUrl)
-        }
+        urlInput.setText(ConfigStorage.getApiBaseUrl(this))
         updateConfigStatus()
     }
 
     private fun updateConfigStatus() {
         configStatusText.text = if (ConfigStorage.isConfigured(this)) {
-            "Statut : configure"
+            "Statut : configuré (token enregistré)"
         } else {
-            "Statut : non configure"
+            "Statut : token appareil manquant"
         }
     }
 
@@ -132,7 +135,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         ConfigStorage.saveConfig(this, url, token)
-        tokenInput.setText("") // ne jamais laisser le token affiche a l'ecran
+        tokenInput.setText("")
         updateConfigStatus()
         Toast.makeText(this, "Configuration enregistree", Toast.LENGTH_SHORT).show()
     }
@@ -143,8 +146,6 @@ class MainActivity : AppCompatActivity() {
         }
         val app = applicationContext as? KndTiguiApplication ?: return
         app.triggerSync()
-        // Rafraichissement differe : la synchro tourne en arriere-plan,
-        // on rafraichit l'affichage un peu plus tard pour refleter le resultat.
         listText.postDelayed({ refreshList() }, 3000)
     }
 
@@ -194,9 +195,9 @@ class MainActivity : AppCompatActivity() {
                 arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS),
                 SMS_PERMISSION_CODE
             )
-            statusText.text = "KND-Tigui v0.3\n\nDemande des permissions SMS en cours..."
+            statusText.text = "KND-Tigui v0.4\n\nDemande des permissions SMS en cours..."
         } else {
-            statusText.text = "KND-Tigui v0.3\n\n✅ Permissions SMS deja accordees.\nEn attente d'un paiement..."
+            statusText.text = "KND-Tigui v0.4\n\n✅ Permissions SMS deja accordees.\nEn attente d'un paiement..."
         }
     }
 
@@ -209,9 +210,9 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == SMS_PERMISSION_CODE) {
             val allGranted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
             statusText.text = if (allGranted) {
-                "KND-Tigui v0.3\n\n✅ Permissions accordees.\nEn attente d'un paiement..."
+                "KND-Tigui v0.4\n\n✅ Permissions accordees.\nEn attente d'un paiement..."
             } else {
-                "KND-Tigui v0.3\n\n❌ Permissions refusees.\nImpossible de detecter les paiements."
+                "KND-Tigui v0.4\n\n❌ Permissions refusees.\nImpossible de detecter les paiements."
             }
         }
     }

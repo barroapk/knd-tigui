@@ -8,7 +8,7 @@
 
     <application
         android:name=".KndTiguiApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:label="KND-Tigui"
         android:theme="@style/Theme.KndTigui">
 
@@ -20,6 +20,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".ManagerActivity"
+            android:exported="false" />
 
         <receiver
             android:name=".SmsReceiver"
