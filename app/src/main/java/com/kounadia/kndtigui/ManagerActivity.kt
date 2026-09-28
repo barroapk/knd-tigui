@@ -58,6 +58,9 @@ class ManagerActivity : AppCompatActivity() {
     private var managers = JSONArray()
     private var managersLoaded = false
     private var managersLoading = false
+    private var deviceList = JSONArray()
+    private var devicesLoaded = false
+    private var devicesLoading = false
     private var statusMessage = ""
     private var busy = false
 
@@ -624,6 +627,177 @@ class ManagerActivity : AppCompatActivity() {
         } else {
             for (i in 0 until managers.length()) {
                 content.addView(managerCard(managers.getJSONObject(i)))
+            }
+        }
+
+        sectionTitle(content, "Appareils")
+        if (!devicesLoaded && !devicesLoading) loadDevices()
+        if (!devicesLoaded) {
+            val loadingText = t("Chargement…", 13f, Ui.TEXT2)
+            loadingText.setPadding(0, dp(12), 0, 0)
+            content.addView(loadingText)
+        } else if (deviceList.length() == 0) {
+            emptyState(content, "Aucun appareil enregistré.")
+        } else {
+            for (i in 0 until deviceList.length()) {
+                content.addView(deviceCard(deviceList.getJSONObject(i)))
+            }
+        }
+    }
+
+    private fun loadDevices() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (devicesLoading) return
+        devicesLoading = true
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                deviceList = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/admin/devices", token))
+                }
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    devicesLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+            } catch (e: Exception) {
+            }
+            devicesLoaded = true
+            devicesLoading = false
+            if (currentTab == Tab.ADMIN) renderTab()
+        }
+    }
+
+    private fun reloadDevices() {
+        devicesLoaded = false
+        devicesLoading = false
+        renderTab()
+    }
+
+    private fun managerNameById(id: String): String {
+        for (i in 0 until managers.length()) {
+            val m = managers.getJSONObject(i)
+            if (m.getString("id") == id) return m.getString("display_name")
+        }
+        return "Gestionnaire"
+    }
+
+    private fun deviceCard(d: JSONObject): View {
+        val enabled = d.optBoolean("enabled", true)
+        val isThis = d.getString("id") == (ConfigStorage.getDeviceId(this) ?: "")
+        val assigned = str(d, "assignedManagerId")
+        val card = cardShell(R.drawable.ic_phone, if (enabled) Ui.PRIMARY else Ui.TEXT2)
+
+        val mid = LinearLayout(this)
+        mid.orientation = LinearLayout.VERTICAL
+        mid.setPadding(dp(12), 0, dp(8), 0)
+        val name = t(d.getString("deviceName"), 15f, Ui.TEXT, true)
+        name.maxLines = 1
+        name.ellipsize = TextUtils.TruncateAt.END
+        mid.addView(name)
+        val sub = if (assigned.isEmpty()) "Non affecté" else "Affecté à " + managerNameById(assigned)
+        mid.addView(t(if (isThis) "Ce téléphone · $sub" else sub, 12f, Ui.TEXT2))
+        card.addView(mid, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+        card.addView(t(if (enabled) "● Actif" else "● Désactivé", 12f, if (enabled) Ui.SUCCESS else Ui.TEXT2, true))
+        Ui.pressable(card) { showDeviceSheet(d) }
+        return card
+    }
+
+    private fun showDeviceSheet(d: JSONObject) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        val id = d.getString("id")
+        val enabled = d.optBoolean("enabled", true)
+        val isThis = id == (ConfigStorage.getDeviceId(this) ?: "")
+        val assigned = str(d, "assignedManagerId")
+        val lastSeen = str(d, "lastSeenAt")
+
+        content.addView(centered(d.getString("deviceName"), 20f, Ui.TEXT, true))
+
+        val pillWrap = LinearLayout(this)
+        pillWrap.gravity = Gravity.CENTER
+        pillWrap.setPadding(0, dp(10), 0, dp(4))
+        pillWrap.addView(Ui.pill(this, if (enabled) "Actif" else "Désactivé", if (enabled) Ui.SUCCESS else Ui.TEXT2))
+        content.addView(pillWrap, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        content.addView(
+            Ui.section(
+                this, "Appareil",
+                listOf(
+                    "Affectation" to (if (assigned.isEmpty()) "Non affecté" else managerNameById(assigned)),
+                    "Dernière activité" to (if (lastSeen.isEmpty()) "Jamais" else longDate(lastSeen)),
+                    "Créé le" to longDate(str(d, "createdAt")),
+                    "Ce téléphone" to (if (isThis) "Oui" else "Non"),
+                ),
+            ),
+        )
+
+        content.addView(Ui.button(this, if (assigned.isEmpty()) "Affecter à un gestionnaire" else "Changer l'affectation", "secondary") {
+            sheet.dismiss()
+            showAssignPicker(id)
+        })
+        if (assigned.isNotEmpty()) {
+            content.addView(Ui.button(this, "Retirer l'affectation", "secondary") {
+                sheet.dismiss()
+                deviceAction("/admin/devices/$id/unassign", null, "Affectation retirée")
+            })
+        }
+        content.addView(Ui.button(this, if (enabled) "Désactiver l'appareil" else "Réactiver l'appareil", if (enabled) "danger" else "primary") {
+            sheet.dismiss()
+            if (enabled && isThis) {
+                AlertDialog.Builder(this)
+                    .setTitle("Désactiver ce téléphone")
+                    .setMessage("C'est le téléphone que vous utilisez : il cessera de recevoir les paiements. Continuer ?")
+                    .setPositiveButton("Désactiver") { _, _ ->
+                        deviceAction("/admin/devices/$id/status", JSONObject().put("enabled", false), "Appareil désactivé")
+                    }
+                    .setNegativeButton("Annuler", null)
+                    .show()
+            } else {
+                deviceAction("/admin/devices/$id/status", JSONObject().put("enabled", !enabled), if (enabled) "Appareil désactivé" else "Appareil réactivé")
+            }
+        })
+        sheet.show()
+    }
+
+    private fun showAssignPicker(deviceId: String) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        content.addView(centered("Affecter à", 20f, Ui.TEXT, true))
+        for (i in 0 until managers.length()) {
+            val m = managers.getJSONObject(i)
+            if (!m.optBoolean("enabled", true)) continue
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.VERTICAL
+            row.setPadding(dp(16), dp(14), dp(16), dp(14))
+            row.background = Ui.rounded(this, Ui.ELEVATED, 16, Ui.BORDER)
+            row.addView(t(m.getString("display_name"), 16f, Ui.TEXT, true))
+            row.addView(t(roleLabel(m.getString("role")), 12f, Ui.TEXT2))
+            val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+            lp.setMargins(0, dp(12), 0, 0)
+            row.layoutParams = lp
+            val managerId = m.getString("id")
+            Ui.pressable(row) {
+                sheet.dismiss()
+                deviceAction("/admin/devices/$deviceId/assign", JSONObject().put("managerId", managerId), "Appareil affecté")
+            }
+            content.addView(row)
+        }
+        sheet.show()
+    }
+
+    private fun deviceAction(path: String, body: JSONObject?, okMessage: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                withContext(Dispatchers.IO) { ApiClient.request(base, "PATCH", path, token, body) }
+                Toast.makeText(this@ManagerActivity, okMessage, Toast.LENGTH_SHORT).show()
+                reloadDevices()
+            } catch (e: ApiException) {
+                handleApiError(e, true)
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_LONG).show()
             }
         }
     }
