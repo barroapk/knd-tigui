@@ -65,6 +65,14 @@ class ManagerActivity : AppCompatActivity() {
     private var campaigns = JSONArray()
     private var campaignsLoaded = false
     private var campaignsLoading = false
+    private var hQuery = ""
+    private var hPeriod = ""
+    private var hSort = "date_desc"
+    private var hPage = 1
+    private var hTotalPages = 1
+    private var hTotal = 0
+    private var hLoadingMore = false
+    private val hExtra = mutableListOf<JSONObject>()
     private var statusMessage = ""
     private var busy = false
 
@@ -538,14 +546,119 @@ class ManagerActivity : AppCompatActivity() {
         header(content, "Historique", subtitle)
         summaryCards(content)
 
+        // Recherche
+        val search = Ui.input(this, "Rechercher : référence, ID joueur, nom, gestionnaire")
+        search.setText(hQuery)
+        search.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+        search.setOnEditorActionListener { v, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                hQuery = v.text.toString().trim()
+                applyHistoryFilters()
+                true
+            } else {
+                false
+            }
+        }
+        val lp = search.layoutParams as LinearLayout.LayoutParams
+        lp.setMargins(0, dp(16), 0, dp(4))
+        content.addView(search)
+
+        // Periode
+        val periods = listOf("" to "Tout", "today" to "Aujourd'hui", "yesterday" to "Hier", "7d" to "7 jours", "30d" to "30 jours", "month" to "Ce mois")
+        val periodRow = LinearLayout(this)
+        periodRow.orientation = LinearLayout.HORIZONTAL
+        for ((key, label) in periods) {
+            periodRow.addView(chip(label, hPeriod == key) {
+                hPeriod = key
+                applyHistoryFilters()
+            })
+        }
+        val periodScroll = android.widget.HorizontalScrollView(this)
+        periodScroll.isHorizontalScrollBarEnabled = false
+        periodScroll.addView(periodRow)
+        content.addView(periodScroll)
+
+        // Tri
+        val sorts = listOf("date_desc" to "Plus récent", "date_asc" to "Plus ancien", "amount_desc" to "Montant ↓", "amount_asc" to "Montant ↑")
+        val sortRow = LinearLayout(this)
+        sortRow.orientation = LinearLayout.HORIZONTAL
+        for ((key, label) in sorts) {
+            sortRow.addView(chip(label, hSort == key) {
+                hSort = key
+                applyHistoryFilters()
+            })
+        }
+        val sortScroll = android.widget.HorizontalScrollView(this)
+        sortScroll.isHorizontalScrollBarEnabled = false
+        sortScroll.addView(sortRow)
+        content.addView(sortScroll)
+
+        // Resultats
         val items = history?.optJSONArray("items") ?: JSONArray()
-        sectionTitle(content, "Dernières opérations")
+        sectionTitle(content, "$hTotal opération(s)")
         if (history == null) {
             emptyState(content, "Historique indisponible pour le moment.")
-        } else if (items.length() == 0) {
-            emptyState(content, "Aucun dépôt crédité pour le moment.")
+        } else if (items.length() == 0 && hExtra.isEmpty()) {
+            emptyState(content, if (hQuery.isEmpty() && hPeriod.isEmpty()) "Aucun dépôt crédité pour le moment." else "Aucun résultat pour ces filtres.")
         } else {
             addDepositCards(content, items, items.length())
+            for (d in hExtra) {
+                content.addView(depositCard(d))
+            }
+            if (hPage < hTotalPages) {
+                content.addView(Ui.button(this, if (hLoadingMore) "Chargement…" else "Charger plus", "secondary") {
+                    loadMoreHistory()
+                })
+            }
+        }
+    }
+
+    private fun chip(label: String, selected: Boolean, onClick: () -> Unit): TextView {
+        val v = t(label, 13f, if (selected) Color.WHITE else Ui.TEXT2, selected)
+        v.setPadding(dp(14), dp(8), dp(14), dp(8))
+        v.background = Ui.rounded(this, if (selected) Ui.PRIMARY else Ui.ELEVATED, 20, if (selected) null else Ui.BORDER)
+        val lp = LinearLayout.LayoutParams(WRAP, WRAP)
+        lp.setMargins(0, dp(8), dp(8), 0)
+        v.layoutParams = lp
+        Ui.pressable(v, onClick)
+        return v
+    }
+
+    private fun historyQueryString(page: Int): String {
+        val sb = StringBuilder("page=$page&limit=20&sort=$hSort")
+        if (hPeriod.isNotEmpty()) sb.append("&period=").append(hPeriod)
+        if (hQuery.isNotEmpty()) sb.append("&q=").append(java.net.URLEncoder.encode(hQuery, "UTF-8"))
+        return sb.toString()
+    }
+
+    private fun applyHistoryFilters() {
+        hPage = 1
+        hExtra.clear()
+        loadData(silent = true)
+    }
+
+    private fun loadMoreHistory() {
+        if (hLoadingMore || hPage >= hTotalPages) return
+        val token = SessionStorage.getToken(this) ?: return
+        hLoadingMore = true
+        renderTab()
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                val next = hPage + 1
+                val result = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "GET", "/manager/deposits/history?" + historyQueryString(next), token))
+                }
+                val more = result.optJSONArray("items") ?: JSONArray()
+                for (i in 0 until more.length()) hExtra.add(more.getJSONObject(i))
+                hPage = next
+            } catch (e: ApiException) {
+                handleApiError(e, false)
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+            hLoadingMore = false
+            renderTab()
         }
     }
 
@@ -1603,7 +1716,7 @@ class ManagerActivity : AppCompatActivity() {
                     val d = JSONArray(ApiClient.request(base, "GET", "/manager/deposits", token))
                     val u = JSONArray(ApiClient.request(base, "GET", "/manager/payments/unmatched", token))
                     val h: JSONObject? = try {
-                        JSONObject(ApiClient.request(base, "GET", "/manager/deposits/history", token))
+                        JSONObject(ApiClient.request(base, "GET", "/manager/deposits/history?" + historyQueryString(1), token))
                     } catch (e: ApiException) {
                         if (e.httpCode == 401) throw e else null
                     }
@@ -1612,6 +1725,10 @@ class ManagerActivity : AppCompatActivity() {
                 deposits = result.first
                 unmatched = result.second
                 history = result.third
+                hPage = 1
+                hExtra.clear()
+                hTotalPages = result.third?.optInt("totalPages", 1) ?: 1
+                hTotal = result.third?.optInt("total", 0) ?: 0
                 statusMessage = "Mis à jour à " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
                 renderTab()
                 updateNav()
