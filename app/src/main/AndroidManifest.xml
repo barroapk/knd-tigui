@@ -13,17 +13,14 @@
         android:theme="@style/Theme.KndTigui">
 
         <activity
-            android:name=".MainActivity"
-            android:exported="true">
+            android:name=".ManagerActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".ManagerActivity"
-            android:exported="false" />
 
         <receiver
             android:name=".SmsReceiver"

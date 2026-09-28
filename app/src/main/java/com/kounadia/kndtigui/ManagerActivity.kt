@@ -41,6 +41,7 @@ class ManagerActivity : AppCompatActivity() {
         QUEUE("À traiter", R.drawable.ic_inbox),
         HISTORY("Historique", R.drawable.ic_history),
         PAYMENTS("Paiements", R.drawable.ic_alert),
+        ADMIN("Admin", R.drawable.ic_users),
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -308,6 +309,7 @@ class ManagerActivity : AppCompatActivity() {
         val toProcess = countToProcess()
 
         for (tab in Tab.values()) {
+            if (tab == Tab.ADMIN && SessionStorage.getRole(this) != "ADMIN") continue
             val selected = tab == currentTab
             val color = if (selected) Ui.PRIMARY else Ui.TEXT2
             val item = LinearLayout(this)
@@ -357,6 +359,7 @@ class ManagerActivity : AppCompatActivity() {
             Tab.QUEUE -> buildQueue(content)
             Tab.HISTORY -> buildHistory(content)
             Tab.PAYMENTS -> buildPayments(content)
+            Tab.ADMIN -> buildAdmin(content)
         }
 
         body.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -545,6 +548,169 @@ class ManagerActivity : AppCompatActivity() {
                 content.addView(paymentCard(unmatched.getJSONObject(i)))
             }
         }
+    }
+
+    // ---------- administration : telephone hote ----------
+
+    private val smsRequestCode = 100
+
+    private fun ensureSmsPermission() {
+        val receive = androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECEIVE_SMS)
+        val read = androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_SMS)
+        if (receive != android.content.pm.PackageManager.PERMISSION_GRANTED || read != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this,
+                arrayOf(android.Manifest.permission.RECEIVE_SMS, android.Manifest.permission.READ_SMS),
+                smsRequestCode,
+            )
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == smsRequestCode) {
+            val granted = grantResults.isNotEmpty() && grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED }
+            val message = if (granted) "Autorisation SMS accordée" else "Sans l'autorisation SMS, ce téléphone ne peut pas recevoir les paiements"
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun buildAdmin(content: LinearLayout) {
+        header(content, "Administration", "Téléphone hôte des SMS")
+
+        val configured = ConfigStorage.isConfigured(this)
+        val label = ConfigStorage.getHostLabel(this)
+
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.setPadding(dp(16), dp(16), dp(16), dp(16))
+        card.background = Ui.rounded(this, Ui.SURFACE, 18, Ui.BORDER)
+
+        val title = t("TÉLÉPHONE HÔTE", 11f, Ui.TEXT2, true)
+        title.letterSpacing = 0.08f
+        card.addView(title)
+
+        val state = t(if (configured) "Actif" else "Non configuré", 22f, if (configured) Ui.SUCCESS else Ui.WARNING, true)
+        state.setPadding(0, dp(8), 0, dp(2))
+        card.addView(state)
+
+        val detail = if (configured) label.ifEmpty { "Configuré" } else "Ce téléphone ne reçoit pas les paiements Orange Money."
+        card.addView(t(detail, 13f, Ui.TEXT2))
+        content.addView(card, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        content.addView(Ui.button(this, if (configured) "Reconfigurer ce téléphone" else "Configurer ce téléphone") {
+            chooseHostManager()
+        })
+        if (configured) {
+            content.addView(Ui.button(this, "Retirer ce téléphone", "danger") { confirmRemoveHost() })
+        }
+    }
+
+    private fun chooseHostManager() {
+        val token = SessionStorage.getToken(this) ?: return
+        ensureSmsPermission()
+        Toast.makeText(this, "Chargement des gestionnaires…", Toast.LENGTH_SHORT).show()
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                val list = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/admin/managers", token))
+                }
+                showManagerPicker(list)
+            } catch (e: ApiException) {
+                handleApiError(e, true)
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showManagerPicker(list: JSONArray) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        content.addView(centered("Choisir le gestionnaire", 20f, Ui.TEXT, true))
+        content.addView(centered("Ce téléphone recevra les paiements Orange Money pour lui.", 13f, Ui.TEXT2, false))
+
+        for (i in 0 until list.length()) {
+            val m = list.getJSONObject(i)
+            if (!m.optBoolean("enabled", true)) continue
+            val id = m.getString("id")
+            val name = m.getString("display_name")
+            val roleLabel = if (m.getString("role") == "ADMIN") "Administrateur" else "Gestionnaire"
+
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.VERTICAL
+            row.setPadding(dp(16), dp(14), dp(16), dp(14))
+            row.background = Ui.rounded(this, Ui.ELEVATED, 16, Ui.BORDER)
+            row.addView(t(name, 16f, Ui.TEXT, true))
+            row.addView(t(roleLabel, 12f, Ui.TEXT2))
+            val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+            lp.setMargins(0, dp(12), 0, 0)
+            row.layoutParams = lp
+            Ui.pressable(row) {
+                sheet.dismiss()
+                configureHost(id, name)
+            }
+            content.addView(row)
+        }
+        sheet.show()
+    }
+
+    private fun configureHost(managerId: String, managerName: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        Toast.makeText(this, "Configuration en cours…", Toast.LENGTH_SHORT).show()
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                val oldId = ConfigStorage.getDeviceId(this@ManagerActivity)
+                val result = withContext(Dispatchers.IO) {
+                    val deviceName = android.os.Build.MODEL + " - " + managerName
+                    val created = JSONObject(
+                        ApiClient.request(base, "POST", "/admin/devices", token, JSONObject().put("deviceName", deviceName)),
+                    )
+                    val deviceId = created.getJSONObject("device").getString("id")
+                    val deviceToken = created.getString("deviceToken")
+                    ApiClient.request(base, "PATCH", "/admin/devices/$deviceId/assign", token, JSONObject().put("managerId", managerId))
+                    if (oldId != null) {
+                        try {
+                            ApiClient.request(base, "PATCH", "/admin/devices/$oldId/status", token, JSONObject().put("enabled", false))
+                        } catch (e: Exception) {
+                        }
+                    }
+                    Pair(deviceId, deviceToken)
+                }
+                ConfigStorage.saveHost(this@ManagerActivity, result.first, result.second, "Hôte de $managerName")
+                (applicationContext as? KndTiguiApplication)?.triggerSync()
+                Toast.makeText(this@ManagerActivity, "Téléphone configuré ✅", Toast.LENGTH_LONG).show()
+                renderTab()
+            } catch (e: ApiException) {
+                handleApiError(e, true)
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun confirmRemoveHost() {
+        AlertDialog.Builder(this)
+            .setTitle("Retirer ce téléphone")
+            .setMessage("Ce téléphone ne recevra plus les paiements Orange Money. Continuer ?")
+            .setPositiveButton("Retirer") { _, _ ->
+                val token = SessionStorage.getToken(this)
+                val deviceId = ConfigStorage.getDeviceId(this)
+                val base = ConfigStorage.getApiBaseUrl(this)
+                if (token != null && deviceId != null) {
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            ApiClient.request(base, "PATCH", "/admin/devices/$deviceId/status", token, JSONObject().put("enabled", false))
+                        } catch (e: Exception) {
+                        }
+                    }
+                }
+                ConfigStorage.clearHost(this)
+                renderTab()
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
     }
 
     // ---------- cartes compactes ----------
