@@ -56,6 +56,26 @@ object Ui {
         return v
     }
 
+    fun input(context: Context, hint: String, password: Boolean = false, email: Boolean = false): android.widget.EditText {
+        val e = android.widget.EditText(context)
+        e.hint = hint
+        e.setHintTextColor(TEXT2)
+        e.setTextColor(TEXT)
+        e.textSize = 15f
+        e.isSingleLine = true
+        e.inputType = when {
+            password -> android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            email -> android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+            else -> android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
+        }
+        e.background = rounded(context, ELEVATED, 14, BORDER)
+        e.setPadding(dp(context, 16), dp(context, 14), dp(context, 16), dp(context, 14))
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.setMargins(0, 0, 0, dp(context, 12))
+        e.layoutParams = lp
+        return e
+    }
+
     fun statusInfo(status: String): Pair<String, Int> = when (status) {
         "PAYMENT_CONFIRMED" -> Pair("À traiter", WARNING)
         "PROCESSING" -> Pair("En cours", PRIMARY)
