@@ -389,7 +389,13 @@ class ManagerActivity : AppCompatActivity() {
 
         body.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
         currentScroll = sv
-        sv.post { sv.scrollTo(0, previousScroll) }
+        sv.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                sv.viewTreeObserver.removeOnPreDrawListener(this)
+                sv.scrollTo(0, previousScroll)
+                return true
+            }
+        })
     }
 
     // ---------- en-tete et composants de page ----------
@@ -673,7 +679,10 @@ class ManagerActivity : AppCompatActivity() {
     private fun applyHistoryFilters() {
         hPage = 1
         hExtra.clear()
-        loadData(silent = true)
+        statusMessage = "Chargement…"
+        forceRenderNext = true
+        renderTab()
+        loadData(silent = true, force = true)
     }
 
     private fun loadMoreHistory() {
@@ -1739,8 +1748,14 @@ class ManagerActivity : AppCompatActivity() {
 
     // ---------- chargement et actions ----------
 
-    private fun loadData(silent: Boolean) {
-        if (busy) return
+    private var reloadRequested = false
+    private var forceRenderNext = false
+
+    private fun loadData(silent: Boolean, force: Boolean = false) {
+        if (busy) {
+            if (force) reloadRequested = true
+            return
+        }
         val token = SessionStorage.getToken(this) ?: return
         busy = true
         if (!silent) {
@@ -1767,12 +1782,15 @@ class ManagerActivity : AppCompatActivity() {
                 deposits = result.first
                 unmatched = result.second
                 history = result.third
-                hPage = 1
-                hExtra.clear()
-                hTotalPages = result.third?.optInt("totalPages", 1) ?: 1
-                hTotal = result.third?.optInt("total", 0) ?: 0
+                if (changed) {
+                    hPage = 1
+                    hExtra.clear()
+                    hTotalPages = result.third?.optInt("totalPages", 1) ?: 1
+                    hTotal = result.third?.optInt("total", 0) ?: 0
+                }
                 statusMessage = "Mis à jour à " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-                if (changed || !silent) {
+                if (changed || !silent || forceRenderNext) {
+                    forceRenderNext = false
                     renderTab()
                     updateNav()
                 }
@@ -1783,6 +1801,10 @@ class ManagerActivity : AppCompatActivity() {
                 renderTab()
             } finally {
                 busy = false
+                if (reloadRequested) {
+                    reloadRequested = false
+                    loadData(silent = true, force = true)
+                }
             }
         }
     }
