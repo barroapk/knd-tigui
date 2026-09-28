@@ -578,9 +578,28 @@ class ManagerActivity : AppCompatActivity() {
         // Recherche
         val search = Ui.input(this, "Rechercher : référence, ID joueur, nom, gestionnaire")
         search.setText(hQuery)
+        search.setSelection(search.text.length)
         search.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+        var searchRunnable: Runnable? = null
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                searchRunnable?.let { handler.removeCallbacks(it) }
+                val value = s?.toString()?.trim() ?: ""
+                val r = Runnable {
+                    if (value != hQuery) {
+                        hQuery = value
+                        applyHistoryFilters()
+                    }
+                }
+                searchRunnable = r
+                handler.postDelayed(r, SEARCH_DEBOUNCE_MS)
+            }
+        })
         search.setOnEditorActionListener { v, actionId, _ ->
             if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                searchRunnable?.let { handler.removeCallbacks(it) }
                 hQuery = v.text.toString().trim()
                 applyHistoryFilters()
                 true
