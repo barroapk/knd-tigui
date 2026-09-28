@@ -66,6 +66,8 @@ class ManagerActivity : AppCompatActivity() {
     private var campaignsLoaded = false
     private var campaignsLoading = false
     private var hQuery = ""
+    private var hDate = ""
+    private var lastSignature = ""
     private var hPeriod = ""
     private var hSort = "date_desc"
     private var hPage = 1
@@ -563,12 +565,27 @@ class ManagerActivity : AppCompatActivity() {
         lp.setMargins(0, dp(16), 0, dp(4))
         content.addView(search)
 
+        // Date precise (calendrier)
+        val dateRow = LinearLayout(this)
+        dateRow.orientation = LinearLayout.HORIZONTAL
+        dateRow.gravity = Gravity.CENTER_VERTICAL
+        val dateLabel = if (hDate.isEmpty()) "Choisir une date" else formatDateFr(hDate)
+        dateRow.addView(chip("📅 $dateLabel", hDate.isNotEmpty()) { pickHistoryDate() })
+        if (hDate.isNotEmpty()) {
+            dateRow.addView(chip("✕ Retirer", false) {
+                hDate = ""
+                applyHistoryFilters()
+            })
+        }
+        content.addView(dateRow)
+
         // Periode
         val periods = listOf("" to "Tout", "today" to "Aujourd'hui", "yesterday" to "Hier", "7d" to "7 jours", "30d" to "30 jours", "month" to "Ce mois")
         val periodRow = LinearLayout(this)
         periodRow.orientation = LinearLayout.HORIZONTAL
         for ((key, label) in periods) {
-            periodRow.addView(chip(label, hPeriod == key) {
+            periodRow.addView(chip(label, hDate.isEmpty() && hPeriod == key) {
+                hDate = ""
                 hPeriod = key
                 applyHistoryFilters()
             })
@@ -599,7 +616,7 @@ class ManagerActivity : AppCompatActivity() {
         if (history == null) {
             emptyState(content, "Historique indisponible pour le moment.")
         } else if (items.length() == 0 && hExtra.isEmpty()) {
-            emptyState(content, if (hQuery.isEmpty() && hPeriod.isEmpty()) "Aucun dépôt crédité pour le moment." else "Aucun résultat pour ces filtres.")
+            emptyState(content, if (hQuery.isEmpty() && hPeriod.isEmpty() && hDate.isEmpty()) "Aucun dépôt crédité pour le moment." else "Aucun résultat pour ces filtres.")
         } else {
             addDepositCards(content, items, items.length())
             for (d in hExtra) {
@@ -611,6 +628,26 @@ class ManagerActivity : AppCompatActivity() {
                 })
             }
         }
+    }
+
+    private fun formatDateFr(iso: String): String =
+        if (iso.length == 10) "${iso.substring(8, 10)}/${iso.substring(5, 7)}/${iso.substring(0, 4)}" else iso
+
+    private fun pickHistoryDate() {
+        val cal = java.util.Calendar.getInstance()
+        if (hDate.length == 10) {
+            cal.set(hDate.substring(0, 4).toInt(), hDate.substring(5, 7).toInt() - 1, hDate.substring(8, 10).toInt())
+        }
+        android.app.DatePickerDialog(
+            this,
+            { _, year, month, day ->
+                hDate = String.format(Locale.US, "%04d-%02d-%02d", year, month + 1, day)
+                applyHistoryFilters()
+            },
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH),
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        ).show()
     }
 
     private fun chip(label: String, selected: Boolean, onClick: () -> Unit): TextView {
@@ -626,7 +663,8 @@ class ManagerActivity : AppCompatActivity() {
 
     private fun historyQueryString(page: Int): String {
         val sb = StringBuilder("page=$page&limit=20&sort=$hSort")
-        if (hPeriod.isNotEmpty()) sb.append("&period=").append(hPeriod)
+        if (hDate.isNotEmpty()) sb.append("&date=").append(hDate)
+        else if (hPeriod.isNotEmpty()) sb.append("&period=").append(hPeriod)
         if (hQuery.isNotEmpty()) sb.append("&q=").append(java.net.URLEncoder.encode(hQuery, "UTF-8"))
         return sb.toString()
     }
@@ -1722,6 +1760,9 @@ class ManagerActivity : AppCompatActivity() {
                     }
                     Triple(d, u, h)
                 }
+                val signature = result.first.toString() + "|" + result.second.toString() + "|" + (result.third?.toString() ?: "")
+                val changed = signature != lastSignature
+                lastSignature = signature
                 deposits = result.first
                 unmatched = result.second
                 history = result.third
@@ -1730,8 +1771,10 @@ class ManagerActivity : AppCompatActivity() {
                 hTotalPages = result.third?.optInt("totalPages", 1) ?: 1
                 hTotal = result.third?.optInt("total", 0) ?: 0
                 statusMessage = "Mis à jour à " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-                renderTab()
-                updateNav()
+                if (changed || !silent) {
+                    renderTab()
+                    updateNav()
+                }
             } catch (e: ApiException) {
                 handleApiError(e, false)
             } catch (e: Exception) {
