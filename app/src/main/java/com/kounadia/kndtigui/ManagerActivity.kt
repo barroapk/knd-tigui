@@ -55,6 +55,9 @@ class ManagerActivity : AppCompatActivity() {
     private var deposits = JSONArray()
     private var unmatched = JSONArray()
     private var history: JSONObject? = null
+    private var managers = JSONArray()
+    private var managersLoaded = false
+    private var managersLoading = false
     private var statusMessage = ""
     private var busy = false
 
@@ -607,6 +610,191 @@ class ManagerActivity : AppCompatActivity() {
         })
         if (configured) {
             content.addView(Ui.button(this, "Retirer ce téléphone", "danger") { confirmRemoveHost() })
+        }
+
+        sectionTitle(content, "Gestionnaires")
+        content.addView(Ui.button(this, "Nouveau gestionnaire", "secondary") { showNewManagerSheet() })
+        if (!managersLoaded && !managersLoading) loadManagers()
+        if (!managersLoaded) {
+            val loadingText = t("Chargement…", 13f, Ui.TEXT2)
+            loadingText.setPadding(0, dp(12), 0, 0)
+            content.addView(loadingText)
+        } else if (managers.length() == 0) {
+            emptyState(content, "Aucun gestionnaire.")
+        } else {
+            for (i in 0 until managers.length()) {
+                content.addView(managerCard(managers.getJSONObject(i)))
+            }
+        }
+    }
+
+    private fun loadManagers() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (managersLoading) return
+        managersLoading = true
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                managers = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/admin/managers", token))
+                }
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    managersLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+            } catch (e: Exception) {
+            }
+            managersLoaded = true
+            managersLoading = false
+            if (currentTab == Tab.ADMIN) renderTab()
+        }
+    }
+
+    private fun reloadManagers() {
+        managersLoaded = false
+        managersLoading = false
+        renderTab()
+    }
+
+    private fun roleLabel(role: String): String = if (role == "ADMIN") "Administrateur" else "Gestionnaire"
+
+    private fun managerCard(m: JSONObject): View {
+        val enabled = m.optBoolean("enabled", true)
+        val card = cardShell(R.drawable.ic_users, if (enabled) Ui.PRIMARY else Ui.TEXT2)
+
+        val mid = LinearLayout(this)
+        mid.orientation = LinearLayout.VERTICAL
+        mid.setPadding(dp(12), 0, dp(8), 0)
+        val name = t(m.getString("display_name"), 15f, Ui.TEXT, true)
+        name.maxLines = 1
+        name.ellipsize = TextUtils.TruncateAt.END
+        mid.addView(name)
+        mid.addView(t(roleLabel(m.getString("role")), 12f, Ui.TEXT2))
+        card.addView(mid, LinearLayout.LayoutParams(0, WRAP, 1f))
+
+        card.addView(t(if (enabled) "● Actif" else "● Désactivé", 12f, if (enabled) Ui.SUCCESS else Ui.TEXT2, true))
+        Ui.pressable(card) { showManagerSheet(m) }
+        return card
+    }
+
+    private fun showManagerSheet(m: JSONObject) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        val id = m.getString("id")
+        val enabled = m.optBoolean("enabled", true)
+        val isSelf = id == (SessionStorage.getManagerId(this) ?: "")
+
+        content.addView(centered(m.getString("display_name"), 22f, Ui.TEXT, true))
+
+        val pillWrap = LinearLayout(this)
+        pillWrap.gravity = Gravity.CENTER
+        pillWrap.setPadding(0, dp(10), 0, dp(4))
+        pillWrap.addView(Ui.pill(this, if (enabled) "Actif" else "Désactivé", if (enabled) Ui.SUCCESS else Ui.TEXT2))
+        content.addView(pillWrap, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        val lastLogin = str(m, "last_login_at")
+        content.addView(
+            Ui.section(
+                this, "Compte",
+                listOf(
+                    "Rôle" to roleLabel(m.getString("role")),
+                    "Email" to m.getString("email"),
+                    "Dernière connexion" to (if (lastLogin.isEmpty()) "Jamais" else longDate(lastLogin)),
+                ),
+            ),
+        )
+
+        if (isSelf) {
+            val note = t("C'est votre compte.", 13f, Ui.TEXT2)
+            note.setPadding(0, dp(16), 0, 0)
+            content.addView(note)
+        } else {
+            content.addView(Ui.button(this, if (enabled) "Désactiver le compte" else "Réactiver le compte", if (enabled) "danger" else "primary") {
+                sheet.dismiss()
+                setManagerEnabled(id, !enabled)
+            })
+        }
+        sheet.show()
+    }
+
+    private fun setManagerEnabled(id: String, enabled: Boolean) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "PATCH", "/admin/managers/$id/status", token, JSONObject().put("enabled", enabled))
+                }
+                Toast.makeText(this@ManagerActivity, if (enabled) "Compte réactivé" else "Compte désactivé", Toast.LENGTH_SHORT).show()
+                reloadManagers()
+            } catch (e: ApiException) {
+                handleApiError(e, true)
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showNewManagerSheet() {
+        val (sheet, content) = Ui.bottomSheet(this)
+        sheet.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+
+        content.addView(centered("Nouveau gestionnaire", 20f, Ui.TEXT, true))
+        content.addView(spacer(12))
+
+        val nameInput = Ui.input(this, "Nom complet")
+        val emailInput = Ui.input(this, "Adresse email", email = true)
+        val passwordInput = Ui.input(this, "Mot de passe (8 caractères minimum)", password = true)
+        content.addView(nameInput)
+        content.addView(emailInput)
+        content.addView(passwordInput)
+
+        var role = "MANAGER"
+        val roleView = t("Rôle : Gestionnaire  (appuyer pour changer)", 13f, Ui.PRIMARY, true)
+        roleView.setPadding(0, dp(4), 0, dp(4))
+        Ui.pressable(roleView) {
+            role = if (role == "MANAGER") "ADMIN" else "MANAGER"
+            roleView.text = "Rôle : " + roleLabel(role) + "  (appuyer pour changer)"
+        }
+        content.addView(roleView)
+
+        var sending = false
+        content.addView(Ui.button(this, "Créer le compte") {
+            val name = nameInput.text.toString().trim()
+            val email = emailInput.text.toString().trim()
+            val password = passwordInput.text.toString()
+            if (name.isEmpty() || email.isEmpty() || password.length < 8) {
+                Toast.makeText(this, "Nom, email et mot de passe (8 caractères minimum) requis", Toast.LENGTH_LONG).show()
+            } else if (!sending) {
+                sending = true
+                createManager(sheet, name, email, password, role) { sending = false }
+            }
+        })
+        sheet.show()
+    }
+
+    private fun createManager(sheet: android.app.Dialog, name: String, email: String, password: String, role: String, onDone: () -> Unit) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                val body = JSONObject()
+                    .put("displayName", name)
+                    .put("email", email)
+                    .put("password", password)
+                    .put("role", role)
+                withContext(Dispatchers.IO) { ApiClient.request(base, "POST", "/admin/managers", token, body) }
+                sheet.dismiss()
+                Toast.makeText(this@ManagerActivity, "Compte créé ✅", Toast.LENGTH_SHORT).show()
+                reloadManagers()
+            } catch (e: ApiException) {
+                onDone()
+                handleApiError(e, true)
+            } catch (e: Exception) {
+                onDone()
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
