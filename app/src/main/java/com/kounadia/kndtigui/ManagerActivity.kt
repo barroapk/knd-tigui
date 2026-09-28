@@ -36,6 +36,7 @@ class ManagerActivity : AppCompatActivity() {
     private var statusLine: TextView? = null
     private var depositsContainer: LinearLayout? = null
     private var unmatchedContainer: LinearLayout? = null
+    private var historyContainer: LinearLayout? = null
     private var busy = false
 
     companion object {
@@ -90,6 +91,7 @@ class ManagerActivity : AppCompatActivity() {
         statusLine = null
         depositsContainer = null
         unmatchedContainer = null
+        historyContainer = null
 
         container.addView(title("KND-Tigui — Espace Manager"))
         container.addView(label("Connectez-vous avec votre compte Manager."))
@@ -190,6 +192,12 @@ class ManagerActivity : AppCompatActivity() {
         unmatchedContainer = unmatched
         container.addView(unmatched)
 
+        container.addView(title(if (role == "ADMIN") "Historique (tous les managers)" else "Mon historique", 16f))
+        val history = LinearLayout(this)
+        history.orientation = LinearLayout.VERTICAL
+        historyContainer = history
+        container.addView(history)
+
         loadWorkspace(silent = false)
     }
 
@@ -204,13 +212,19 @@ class ManagerActivity : AppCompatActivity() {
         scope.launch {
             try {
                 val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
-                val (deposits, unmatched) = withContext(Dispatchers.IO) {
+                val (deposits, unmatched, history) = withContext(Dispatchers.IO) {
                     val d = JSONArray(ApiClient.request(base, "GET", "/manager/deposits", token))
                     val u = JSONArray(ApiClient.request(base, "GET", "/manager/payments/unmatched", token))
-                    Pair(d, u)
+                    val h: JSONObject? = try {
+                        JSONObject(ApiClient.request(base, "GET", "/manager/deposits/history", token))
+                    } catch (e: ApiException) {
+                        if (e.httpCode == 401) throw e else null
+                    }
+                    Triple(d, u, h)
                 }
                 renderDeposits(deposits)
                 renderUnmatched(unmatched)
+                renderHistory(history)
                 setStatus("Mis à jour à " + SimpleDateFormat("HH:mm:ss", Locale.US).format(Date()))
             } catch (e: ApiException) {
                 handleApiError(e, false)
@@ -331,6 +345,55 @@ class ManagerActivity : AppCompatActivity() {
                     card.addView(button("Libérer (admin)") { confirmRelease(id, true) })
                 }
             }
+
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+            params.setMargins(0, dp(8), 0, dp(8))
+            target.addView(card, params)
+        }
+    }
+
+    private fun renderHistory(history: JSONObject?) {
+        val target = historyContainer ?: return
+        target.removeAllViews()
+
+        if (history == null) {
+            target.addView(label("Historique indisponible pour le moment."))
+            return
+        }
+
+        val items = history.optJSONArray("items") ?: JSONArray()
+        val summary = "Aujourd'hui : ${history.optInt("todayCount")} dépôt(s) crédité(s) — ${fcfa(history.optDouble("todayTotal"))}"
+        target.addView(label(summary, 15f))
+
+        if (items.length() == 0) {
+            target.addView(label("Aucun dépôt crédité pour le moment."))
+            return
+        }
+
+        for (i in 0 until items.length()) {
+            val d = items.getJSONObject(i)
+            val payment = d.optJSONObject("payment")
+            val bonusAmount = d.optDouble("bonusAmount")
+
+            val text = StringBuilder()
+            text.append(d.getString("reference")).append("\n")
+            text.append("Joueur : ${d.getString("playerName")} (${d.getString("playerId")})\n")
+            text.append("Crédité : ${fcfa(d.optDouble("totalCredit"))}")
+            if (bonusAmount > 0) text.append(" (dont bonus ${fcfa(bonusAmount)})")
+            text.append("\n")
+            if (payment != null) {
+                text.append("Paiement Orange : ${payment.optString("transactionId")}\n")
+            }
+            text.append("✅ Par ${str(d, "processedBy").ifEmpty { "?" }} le ${shortTime(str(d, "processedAt"))}")
+
+            val card = LinearLayout(this)
+            card.orientation = LinearLayout.VERTICAL
+            card.setPadding(dp(12), dp(12), dp(12), dp(12))
+            card.setBackgroundColor(0x1A4CAF50)
+            card.addView(label(text.toString()))
 
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
