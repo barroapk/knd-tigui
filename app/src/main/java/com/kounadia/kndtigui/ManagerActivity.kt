@@ -937,7 +937,10 @@ class ManagerActivity : AppCompatActivity() {
         name.maxLines = 1
         name.ellipsize = TextUtils.TruncateAt.END
         mid.addView(name)
-        mid.addView(t("${k.optDouble("percentage").toString().removeSuffix(".0")} % · jusqu'au ${shortDate(k.getString("endsAt")).substringBefore(' ')}", 12f, Ui.TEXT2))
+        val firstPct = k.optDouble("percentage").toString().removeSuffix(".0")
+        val returningPct = if (k.isNull("returningPercentage")) null else k.optDouble("returningPercentage").toString().removeSuffix(".0")
+        val pctSummary = if (returningPct != null) "$firstPct % / $returningPct % ensuite" else "$firstPct %"
+        mid.addView(t("$pctSummary · jusqu'au ${shortDate(k.getString("endsAt")).substringBefore(' ')}", 12f, Ui.TEXT2))
         card.addView(mid, LinearLayout.LayoutParams(0, WRAP, 1f))
 
         card.addView(t("● $label", 12f, color, true))
@@ -963,7 +966,11 @@ class ManagerActivity : AppCompatActivity() {
             Ui.section(
                 this, "Règles",
                 listOf(
-                    "Pourcentage" to (k.optDouble("percentage").toString().removeSuffix(".0") + " %"),
+                    "Premier dépôt" to (k.optDouble("percentage").toString().removeSuffix(".0") + " %"),
+                    "Dépôts suivants" to (
+                        if (k.isNull("returningPercentage")) "Non défini"
+                        else k.optDouble("returningPercentage").toString().removeSuffix(".0") + " %"
+                    ),
                     "Dépôt minimum" to fcfa(k.optDouble("minDeposit")),
                     "Bonus maximum" to maxBonus,
                     "Début" to longDate(k.getString("startsAt")),
@@ -971,6 +978,11 @@ class ManagerActivity : AppCompatActivity() {
                 ),
             ),
         )
+
+        content.addView(Ui.button(this, "Modifier", "secondary") {
+            sheet.dismiss()
+            showEditCampaignSheet(k)
+        })
 
         if (state == "INACTIVE") {
             content.addView(Ui.button(this, "Activer la campagne") {
@@ -1010,15 +1022,18 @@ class ManagerActivity : AppCompatActivity() {
         content.addView(spacer(12))
 
         val nameInput = Ui.input(this, "Nom (ex : Bonus vendredi)")
-        val percentInput = Ui.input(this, "Pourcentage (ex : 10)")
+        val percentInput = Ui.input(this, "Premier dépôt (ex : 5)")
+        val returningPercentInput = Ui.input(this, "Dépôts suivants (ex : 1)")
         val minInput = Ui.input(this, "Dépôt minimum en FCFA (facultatif)")
         val maxInput = Ui.input(this, "Bonus maximum en FCFA (facultatif)")
         val numeric = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
         percentInput.inputType = numeric
+        returningPercentInput.inputType = numeric
         minInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER
         maxInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER
         content.addView(nameInput)
         content.addView(percentInput)
+        content.addView(returningPercentInput)
         content.addView(minInput)
         content.addView(maxInput)
 
@@ -1036,11 +1051,20 @@ class ManagerActivity : AppCompatActivity() {
         content.addView(Ui.button(this, "Créer et activer") {
             val name = nameInput.text.toString().trim()
             val percent = percentInput.text.toString().replace(',', '.').toDoubleOrNull()
+            val returningPercent = returningPercentInput.text.toString().replace(',', '.').toDoubleOrNull()
             val minDeposit = minInput.text.toString().trim().toLongOrNull() ?: 0L
             val maxText = maxInput.text.toString().trim()
             val maxBonus = if (maxText.isEmpty()) null else maxText.toLongOrNull()
-            if (name.isEmpty() || percent == null || percent <= 0 || percent > 100) {
-                Toast.makeText(this, "Nom et pourcentage (entre 0 et 100) requis", Toast.LENGTH_LONG).show()
+            if (
+                name.isEmpty() ||
+                percent == null || percent <= 0 || percent > 100 ||
+                returningPercent == null || returningPercent < 0 || returningPercent > 100
+            ) {
+                Toast.makeText(
+                    this,
+                    "Nom et pourcentages valides requis (0 à 100)",
+                    Toast.LENGTH_LONG
+                ).show()
             } else if (maxText.isNotEmpty() && (maxBonus == null || maxBonus <= 0)) {
                 Toast.makeText(this, "Bonus maximum invalide", Toast.LENGTH_LONG).show()
             } else if (!sending) {
@@ -1049,6 +1073,7 @@ class ManagerActivity : AppCompatActivity() {
                 val body = JSONObject()
                     .put("name", name)
                     .put("percentage", percent)
+                    .put("returningPercentage", returningPercent)
                     .put("startsAt", isoUtc(now - 60000))
                     .put("endsAt", isoUtc(periodEndMs(periods[periodIndex].first)))
                     .put("minDeposit", minDeposit)
@@ -1056,6 +1081,158 @@ class ManagerActivity : AppCompatActivity() {
                 createCampaign(sheet, body) { sending = false }
             }
         })
+        sheet.show()
+    }
+
+    private fun showEditCampaignSheet(k: JSONObject) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        sheet.window?.setSoftInputMode(
+            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
+
+        content.addView(centered("Modifier la campagne", 20f, Ui.TEXT, true))
+        content.addView(spacer(12))
+
+        val nameInput = Ui.input(this, "Nom")
+        val percentInput = Ui.input(this, "Premier dépôt")
+        val returningPercentInput = Ui.input(this, "Dépôts suivants")
+        val minInput = Ui.input(this, "Dépôt minimum en FCFA")
+        val maxInput = Ui.input(this, "Bonus maximum en FCFA")
+
+        val numeric =
+            android.text.InputType.TYPE_CLASS_NUMBER or
+                android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+
+        percentInput.inputType = numeric
+        returningPercentInput.inputType = numeric
+        minInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        maxInput.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+
+        nameInput.setText(k.optString("name"))
+        percentInput.setText(k.optDouble("percentage").toString().removeSuffix(".0"))
+
+        if (k.isNull("returningPercentage")) {
+            returningPercentInput.setText("")
+        } else {
+            returningPercentInput.setText(
+                k.optDouble("returningPercentage").toString().removeSuffix(".0")
+            )
+        }
+
+        minInput.setText(
+            k.optDouble("minDeposit").toLong().takeIf { it > 0 }?.toString() ?: ""
+        )
+
+        if (!k.isNull("maxBonus")) {
+            maxInput.setText(k.optDouble("maxBonus").toLong().toString())
+        }
+
+        content.addView(nameInput)
+        content.addView(percentInput)
+        content.addView(returningPercentInput)
+        content.addView(minInput)
+        content.addView(maxInput)
+
+        var sending = false
+
+        content.addView(Ui.button(this, "Enregistrer les modifications") {
+            val name = nameInput.text.toString().trim()
+            val percent =
+                percentInput.text.toString().replace(',', '.').toDoubleOrNull()
+            val returningPercent =
+                returningPercentInput.text.toString().replace(',', '.').toDoubleOrNull()
+
+            val minText = minInput.text.toString().trim()
+            val minDeposit = if (minText.isEmpty()) 0L else minText.toLongOrNull()
+
+            val maxText = maxInput.text.toString().trim()
+            val maxBonus = if (maxText.isEmpty()) null else maxText.toLongOrNull()
+
+            val token = SessionStorage.getToken(this)
+
+            if (
+                name.isEmpty() ||
+                percent == null || percent <= 0 || percent > 100 ||
+                returningPercent == null || returningPercent < 0 || returningPercent > 100
+            ) {
+                Toast.makeText(
+                    this,
+                    "Nom et pourcentages valides requis (0 à 100)",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else if (minDeposit == null || minDeposit < 0) {
+                Toast.makeText(
+                    this,
+                    "Dépôt minimum invalide",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else if (maxText.isNotEmpty() && (maxBonus == null || maxBonus <= 0)) {
+                Toast.makeText(
+                    this,
+                    "Bonus maximum invalide",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else if (token == null) {
+                Toast.makeText(
+                    this,
+                    "Session expirée. Reconnectez-vous.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else if (!sending) {
+                sending = true
+
+                val body = JSONObject()
+                    .put("name", name)
+                    .put("percentage", percent)
+                    .put("returningPercentage", returningPercent)
+                    .put("minDeposit", minDeposit ?: 0L)
+
+                if (maxBonus != null) {
+                    body.put("maxBonus", maxBonus)
+                } else {
+                    body.put("maxBonus", JSONObject.NULL)
+                }
+
+                val id = k.getString("id")
+
+                scope.launch {
+                    try {
+                        val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+
+                        withContext(Dispatchers.IO) {
+                            ApiClient.request(
+                                base,
+                                "PATCH",
+                                "/admin/bonus/$id",
+                                token,
+                                body
+                            )
+                        }
+
+                        sheet.dismiss()
+
+                        Toast.makeText(
+                            this@ManagerActivity,
+                            "Campagne modifiée ✅",
+                            Toast.LENGTH_SHORT
+                        ).show()
+
+                        reloadCampaigns()
+                    } catch (e: ApiException) {
+                        sending = false
+                        handleApiError(e, true)
+                    } catch (e: Exception) {
+                        sending = false
+                        Toast.makeText(
+                            this@ManagerActivity,
+                            "Serveur injoignable. Réessayez.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        })
+
         sheet.show()
     }
 
