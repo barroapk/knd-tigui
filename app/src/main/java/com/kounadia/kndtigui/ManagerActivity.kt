@@ -66,6 +66,7 @@ class ManagerActivity : AppCompatActivity() {
     private var campaigns = JSONArray()
     private var campaignsLoaded = false
     private var campaignsLoading = false
+    private var queueSubTab = "pending"
     private var hQuery = ""
     private var hDate = ""
     private var lastSignature = ""
@@ -567,12 +568,47 @@ class ManagerActivity : AppCompatActivity() {
         }
     }
 
+    private fun queueFiltered(): JSONArray {
+        val result = JSONArray()
+        for (i in 0 until deposits.length()) {
+            val d = deposits.getJSONObject(i)
+            val status = d.getString("status")
+            val matches = when (queueSubTab) {
+                "pending" -> status == "PAYMENT_CONFIRMED" || status == "PROCESSING"
+                "waiting" -> status == "PAYMENT_PENDING" || status == "PAYMENT_LATE"
+                "expired" -> status == "PAYMENT_EXPIRED"
+                else -> true
+            }
+            if (matches) result.put(d)
+        }
+        return result
+    }
+
     private fun buildQueue(content: LinearLayout) {
         header(content, "À traiter", "${deposits.length()} opération(s)")
-        if (deposits.length() == 0) {
-            emptyState(content, "Aucun dépôt à traiter.\nLes nouveaux paiements apparaissent ici automatiquement.")
+
+        val subTabRow = LinearLayout(this)
+        subTabRow.orientation = LinearLayout.HORIZONTAL
+        subTabRow.addView(chip("À traiter", queueSubTab == "pending") {
+            queueSubTab = "pending"
+            renderTab()
+        })
+        subTabRow.addView(chip("En attente", queueSubTab == "waiting") {
+            queueSubTab = "waiting"
+            renderTab()
+        })
+        subTabRow.addView(chip("Expiré", queueSubTab == "expired") {
+            queueSubTab = "expired"
+            renderTab()
+        })
+        content.addView(subTabRow)
+        content.addView(spacer(12))
+
+        val filtered = queueFiltered()
+        if (filtered.length() == 0) {
+            emptyState(content, "Aucune opération dans cette catégorie.")
         } else {
-            addDepositCards(content, deposits, deposits.length())
+            addDepositCards(content, filtered, filtered.length())
         }
     }
 
@@ -1852,6 +1888,18 @@ class ManagerActivity : AppCompatActivity() {
             content.addView(Ui.button(this, "Prendre en charge") {
                 sheet.dismiss()
                 runAction("/manager/deposits/$id/claim", "Dépôt pris en charge")
+            })
+        } else if (status == "PAYMENT_PENDING" || status == "PAYMENT_LATE" || status == "PAYMENT_EXPIRED") {
+            content.addView(Ui.button(this, "Paiement confirmé (vérifié autrement)", "secondary") {
+                AlertDialog.Builder(this)
+                    .setTitle("Confirmer manuellement ?")
+                    .setMessage("Vérifiez d'abord dans Max It ou un autre moyen que ce paiement a bien été reçu avant de continuer. Cette action attribue le dépôt à vous-même pour créditer le compte.")
+                    .setPositiveButton("Oui, paiement confirmé") { _, _ ->
+                        sheet.dismiss()
+                        runAction("/manager/deposits/$id/confirm-manually", "Dépôt confirmé manuellement")
+                    }
+                    .setNegativeButton("Annuler", null)
+                    .show()
             })
         } else if (status == "PROCESSING") {
             if (isMine) {
