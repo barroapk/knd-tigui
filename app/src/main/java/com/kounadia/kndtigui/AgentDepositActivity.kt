@@ -106,36 +106,35 @@ class AgentDepositActivity : AppCompatActivity() {
         col.addView(t("Saisissez l'ID 1xBet du joueur", 14f, Ui.TEXT2))
         col.addView(spacer(8))
 
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-
         val idInput = field("ID joueur", true)
-        val idLp = LinearLayout.LayoutParams(0, WRAP, 1f)
-        idInput.layoutParams = idLp
-        row.addView(idInput)
+        idInput.inputType = InputType.TYPE_CLASS_NUMBER
+        idInput.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_NEXT
+        col.addView(idInput)
 
-        row.addView(spacerHoriz(8))
-
-        val favButton = Ui.button(this, "☰", "secondary") { showFavoritesSheet(idInput) }
-        row.addView(favButton)
-        col.addView(row)
+        val favButton = Ui.button(this, "Mes joueurs favoris", "secondary") {
+            showFavoritesSheet(idInput)
+        }
+        col.addView(favButton)
 
         val messageText = t("", 13f, Ui.ERROR)
         messageText.setPadding(0, dp(8), 0, dp(8))
         col.addView(messageText)
 
-        col.addView(spacer(16))
+        col.addView(spacer(8))
 
         val nextButton = Ui.button(this, "Suivant") { }
         col.addView(nextButton)
 
         nextButton.setOnClickListener {
             val playerId = idInput.text.toString().trim()
+
             if (playerId.isBlank()) {
                 messageText.setTextColor(Ui.ERROR)
                 messageText.text = "Saisissez un ID 1xBet"
+                idInput.requestFocus()
                 return@setOnClickListener
             }
+
             if (busy) return@setOnClickListener
 
             busy = true
@@ -148,7 +147,15 @@ class AgentDepositActivity : AppCompatActivity() {
                 try {
                     val base = ConfigStorage.getApiBaseUrl(this@AgentDepositActivity)
                     val response = withContext(Dispatchers.IO) {
-                        JSONObject(ApiClient.request(base, "GET", "/player-verification/verify?playerId=$playerId", null, null))
+                        JSONObject(
+                            ApiClient.request(
+                                base,
+                                "GET",
+                                "/player-verification/verify?playerId=$playerId",
+                                null,
+                                null
+                            )
+                        )
                     }
 
                     val valid = response.optBoolean("valid", false)

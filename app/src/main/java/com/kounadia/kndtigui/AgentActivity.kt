@@ -83,11 +83,15 @@ class AgentActivity : AppCompatActivity() {
         identityCol.orientation = LinearLayout.VERTICAL
         val identityLp = LinearLayout.LayoutParams(0, WRAP, 1f)
         identityCol.layoutParams = identityLp
-        val companyName = SessionStorage.getDisplayName(this) ?: ""
+        val companyName = SessionStorage.getCompanyName(this) ?: (SessionStorage.getDisplayName(this) ?: "")
+        val agentCode = SessionStorage.getAgentCode(this) ?: ""
         identityCol.addView(Ui.text(this, companyName, 18f, Ui.TEXT, true))
+        if (agentCode.isNotBlank()) {
+            identityCol.addView(Ui.text(this, agentCode, 12f, Ui.TEXT2))
+        }
         headerRow.addView(identityCol)
 
-        val whatsappButton = Ui.text(this, "☎", 22f, Ui.TEXT)
+        val whatsappButton = Ui.text(this, "WhatsApp", 13f, Ui.TEXT)
         whatsappButton.setOnClickListener {
             try {
                 val uri = Uri.parse("https://wa.me/22655337782")

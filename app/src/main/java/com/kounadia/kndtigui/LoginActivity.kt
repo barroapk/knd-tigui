@@ -141,6 +141,8 @@ class LoginActivity : AppCompatActivity() {
                         identifier,
                         displayName,
                         role,
+                        companyName = if (role == "AGENT") user.optString("companyName") else null,
+                        agentCode = if (role == "AGENT") user.optString("agentCode") else null,
                     )
 
                     busy = false
