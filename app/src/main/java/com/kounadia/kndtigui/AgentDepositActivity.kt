@@ -125,6 +125,9 @@ class AgentDepositActivity : AppCompatActivity() {
         val nextButton = Ui.button(this, "Suivant") { }
         col.addView(nextButton)
 
+        col.addView(spacer(16))
+        col.addView(Ui.numericKeypad(this, idInput, allowDecimal = false))
+
         nextButton.setOnClickListener {
             val playerId = idInput.text.toString().trim()
 
@@ -290,33 +293,54 @@ class AgentDepositActivity : AppCompatActivity() {
         col.addView(t("Saisissez le montant", 14f, Ui.TEXT2))
         col.addView(spacer(8))
 
-        val amountDisplay = t("0 FCFA", 32f, Ui.TEXT, true)
-        amountDisplay.gravity = Gravity.CENTER
-        amountDisplay.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
-        col.addView(amountDisplay)
-        col.addView(spacer(16))
+        val amountInput = field("Montant", true)
+        amountInput.textSize = 28f
+        amountInput.gravity = Gravity.CENTER
+        amountInput.inputType = InputType.TYPE_CLASS_NUMBER
+        col.addView(amountInput)
+
+        fun syncFromInput() {
+            amountCents = amountInput.text.toString().toLongOrNull() ?: 0L
+        }
+
+        fun setAmount(value: Long) {
+            amountCents = value
+            amountInput.setText(if (value > 0) value.toString() else "")
+            amountInput.setSelection(amountInput.text.length)
+        }
+
+        amountInput.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(editable: android.text.Editable?) { syncFromInput() }
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        })
+
+        col.addView(spacer(12))
 
         val quickRow = LinearLayout(this)
         quickRow.orientation = LinearLayout.HORIZONTAL
         val amounts = listOf(500L, 1000L, 2000L, 5000L, 10000L)
         for (amt in amounts) {
-            val btn = Ui.button(this, if (amt >= 1000) "${amt / 1000}K" else amt.toString(), "secondary") {
-                amountCents += amt
-                amountDisplay.text = "${formatAmount(amountCents)} FCFA"
-            }
+            val label = if (amt >= 1000) "${amt / 1000}K" else amt.toString()
+            val btn = t(label, 13f, Ui.TEXT, true)
+            btn.gravity = Gravity.CENTER
+            btn.background = Ui.rounded(this, Ui.ELEVATED, 12, Ui.BORDER)
+            btn.setPadding(0, dp(10), 0, dp(10))
             val btnLp = LinearLayout.LayoutParams(0, WRAP, 1f)
-            btnLp.setMargins(dp(4), 0, dp(4), 0)
+            btnLp.setMargins(dp(3), 0, dp(3), 0)
             btn.layoutParams = btnLp
+            Ui.pressable(btn) { setAmount(amountCents + amt) }
             quickRow.addView(btn)
         }
         col.addView(quickRow)
         col.addView(spacer(12))
 
         val resetButton = Ui.button(this, "Réinitialiser le montant", "secondary") {
-            amountCents = 0
-            amountDisplay.text = "0 FCFA"
+            setAmount(0)
         }
         col.addView(resetButton)
+        col.addView(spacer(16))
+        col.addView(Ui.numericKeypad(this, amountInput, allowDecimal = false) { syncFromInput() })
         col.addView(spacer(12))
 
         val messageText = t("", 13f, Ui.ERROR)
@@ -389,7 +413,8 @@ class AgentDepositActivity : AppCompatActivity() {
         col.addView(header("Payer pour confirmer", ""))
         col.addView(t("Dépôt de ${formatAmount(amount)} FCFA au ID $playerId", 15f, Ui.TEXT))
         col.addView(spacer(8))
-        col.addView(t("Effectuez le paiement avec votre compte Orange Money", 13f, Ui.TEXT2))
+        val agentPhone = SessionStorage.getIdentifier(this) ?: ""
+        col.addView(t("Effectuez le paiement avec votre compte Orange Money $agentPhone", 13f, Ui.TEXT2))
         col.addView(spacer(24))
 
         val ussdCard = t(ussdCode, 22f, Ui.TEXT, true)

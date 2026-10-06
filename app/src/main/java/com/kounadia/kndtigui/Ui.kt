@@ -165,6 +165,125 @@ object Ui {
         return box
     }
 
+    /**
+     * Desactive le clavier systeme sur ce champ (utilise avec numericKeypad
+     * pour forcer la saisie via le clavier fixe de l'application).
+     */
+    fun disableSystemKeyboard(editText: android.widget.EditText) {
+        editText.showSoftInputOnFocus = false
+        editText.isLongClickable = true
+        editText.setTextIsSelectable(true)
+    }
+
+    /**
+     * Clavier numerique fixe (0-9, effacer, coller depuis le presse-papier).
+     * N'affiche jamais le clavier systeme : tous les appuis modifient
+     * directement le texte de editText.
+     */
+    fun numericKeypad(
+        context: Context,
+        editText: android.widget.EditText,
+        allowDecimal: Boolean = false,
+        onChanged: () -> Unit = {},
+    ): LinearLayout {
+        disableSystemKeyboard(editText)
+
+        val root = LinearLayout(context)
+        root.orientation = LinearLayout.VERTICAL
+
+        fun appendChar(c: String) {
+            val start = editText.selectionStart.coerceAtLeast(0)
+            val end = editText.selectionEnd.coerceAtLeast(0)
+            editText.text.replace(minOf(start, end), maxOf(start, end), c)
+            onChanged()
+        }
+
+        fun backspace() {
+            val start = editText.selectionStart.coerceAtLeast(0)
+            val end = editText.selectionEnd.coerceAtLeast(0)
+            if (start != end) {
+                editText.text.replace(minOf(start, end), maxOf(start, end), "")
+            } else if (start > 0) {
+                editText.text.replace(start - 1, start, "")
+            }
+            onChanged()
+        }
+
+        fun pasteFromClipboard() {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            val clip = clipboard.primaryClip
+            if (clip != null && clip.itemCount > 0) {
+                val pasted = clip.getItemAt(0).coerceToText(context).toString()
+                val filtered = if (allowDecimal) {
+                    pasted.filter { it.isDigit() || it == '.' }
+                } else {
+                    pasted.filter { it.isDigit() }
+                }
+                if (filtered.isNotEmpty()) {
+                    editText.setText(filtered)
+                    editText.setSelection(filtered.length)
+                    onChanged()
+                }
+            }
+        }
+
+        fun keyButton(label: String, weight: Float = 1f, style: String = "secondary", action: () -> Unit): View {
+            val btn = text(context, label, 20f, if (style == "primary") PRIMARY else TEXT, true)
+            btn.gravity = Gravity.CENTER
+            btn.background = rounded(context, ELEVATED, 14, BORDER)
+            btn.setPadding(0, dp(context, 18), 0, dp(context, 18))
+            val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight)
+            lp.setMargins(dp(context, 4), dp(context, 4), dp(context, 4), dp(context, 4))
+            btn.layoutParams = lp
+            pressable(btn, action)
+            return btn
+        }
+
+        fun row(vararg views: View): LinearLayout {
+            val r = LinearLayout(context)
+            r.orientation = LinearLayout.HORIZONTAL
+            for (v in views) r.addView(v)
+            return r
+        }
+
+        root.addView(row(
+            keyButton("1") { appendChar("1") },
+            keyButton("2") { appendChar("2") },
+            keyButton("3") { appendChar("3") },
+        ))
+        root.addView(row(
+            keyButton("4") { appendChar("4") },
+            keyButton("5") { appendChar("5") },
+            keyButton("6") { appendChar("6") },
+        ))
+        root.addView(row(
+            keyButton("7") { appendChar("7") },
+            keyButton("8") { appendChar("8") },
+            keyButton("9") { appendChar("9") },
+        ))
+
+        val lastRow = if (allowDecimal) {
+            row(
+                keyButton(".") { appendChar(".") },
+                keyButton("0") { appendChar("0") },
+                keyButton("⌫") { backspace() },
+            )
+        } else {
+            row(
+                keyButton("Coller") { pasteFromClipboard() },
+                keyButton("0") { appendChar("0") },
+                keyButton("⌫") { backspace() },
+            )
+        }
+        root.addView(lastRow)
+
+        if (allowDecimal) {
+            root.addView(row(keyButton("Coller", style = "secondary") { pasteFromClipboard() }))
+        }
+
+        return root
+    }
+
     /** Fiche qui monte du bas de l'ecran. Renvoie la fenetre et son conteneur. */
     fun bottomSheet(context: Context): Pair<Dialog, LinearLayout> {
         val dialog = Dialog(context)
