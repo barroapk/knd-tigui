@@ -176,9 +176,11 @@ object Ui {
     }
 
     /**
-     * Clavier numerique fixe (0-9, effacer, coller depuis le presse-papier).
-     * N'affiche jamais le clavier systeme : tous les appuis modifient
-     * directement le texte de editText.
+     * Clavier numerique fixe premium (0-9, effacer, coller depuis le
+     * presse-papier). N'affiche jamais le clavier systeme : tous les
+     * appuis modifient directement le texte de editText. Concu pour
+     * remplir l'espace vertical qui lui est alloue par le parent
+     * (utiliser LinearLayout.LayoutParams(MATCH, 0, 1f) sur l'appelant).
      */
     fun numericKeypad(
         context: Context,
@@ -190,6 +192,11 @@ object Ui {
 
         val root = LinearLayout(context)
         root.orientation = LinearLayout.VERTICAL
+        root.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            1f,
+        )
 
         fun appendChar(c: String) {
             val start = editText.selectionStart.coerceAtLeast(0)
@@ -227,13 +234,12 @@ object Ui {
             }
         }
 
-        fun keyButton(label: String, weight: Float = 1f, style: String = "secondary", action: () -> Unit): View {
-            val btn = text(context, label, 20f, if (style == "primary") PRIMARY else TEXT, true)
+        fun keyButton(label: String, accent: Int? = null, action: () -> Unit): View {
+            val btn = text(context, label, 24f, accent ?: TEXT, true)
             btn.gravity = Gravity.CENTER
-            btn.background = rounded(context, ELEVATED, 14, BORDER)
-            btn.setPadding(0, dp(context, 18), 0, dp(context, 18))
-            val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight)
-            lp.setMargins(dp(context, 4), dp(context, 4), dp(context, 4), dp(context, 4))
+            btn.background = rounded(context, ELEVATED, 16, BORDER)
+            val lp = LinearLayout.LayoutParams(0, 0, 1f)
+            lp.setMargins(dp(context, 6), dp(context, 6), dp(context, 6), dp(context, 6))
             btn.layoutParams = lp
             pressable(btn, action)
             return btn
@@ -242,6 +248,11 @@ object Ui {
         fun row(vararg views: View): LinearLayout {
             val r = LinearLayout(context)
             r.orientation = LinearLayout.HORIZONTAL
+            r.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            )
             for (v in views) r.addView(v)
             return r
         }
@@ -262,29 +273,19 @@ object Ui {
             keyButton("9") { appendChar("9") },
         ))
 
-        val lastRow = if (allowDecimal) {
-            row(
-                keyButton(".") { appendChar(".") },
-                keyButton("0") { appendChar("0") },
-                keyButton("⌫") { backspace() },
-            )
-        } else {
-            row(
-                keyButton("Coller") { pasteFromClipboard() },
-                keyButton("0") { appendChar("0") },
-                keyButton("⌫") { backspace() },
-            )
-        }
-        root.addView(lastRow)
-
-        if (allowDecimal) {
-            root.addView(row(keyButton("Coller", style = "secondary") { pasteFromClipboard() }))
-        }
+        val firstKeyLabel = if (allowDecimal) "." else "⎘"
+        root.addView(row(
+            keyButton(firstKeyLabel, accent = PRIMARY) {
+                if (allowDecimal) appendChar(".") else pasteFromClipboard()
+            },
+            keyButton("0") { appendChar("0") },
+            keyButton("⌫", accent = ERROR) { backspace() },
+        ))
 
         return root
     }
 
-    /** Fiche qui monte du bas de l'ecran. Renvoie la fenetre et son conteneur. */
+    /** Fiche qui monte du bas de l'ecran. Renvoie la fenetre et son conteneur. */    /** Fiche qui monte du bas de l'ecran. Renvoie la fenetre et son conteneur. */
     fun bottomSheet(context: Context): Pair<Dialog, LinearLayout> {
         val dialog = Dialog(context)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
