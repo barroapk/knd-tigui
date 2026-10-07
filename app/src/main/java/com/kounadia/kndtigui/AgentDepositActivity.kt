@@ -161,7 +161,10 @@ class AgentDepositActivity : AppCompatActivity() {
         col.addView(nextButton)
 
         col.addView(spacer(12))
-        col.addView(Ui.numericKeypad(this, idInput, allowDecimal = false))
+        val keypad = Ui.numericKeypad(this, idInput, allowDecimal = false)
+        android.widget.Toast.makeText(this, "DEBUG: keypad childCount=" + keypad.childCount, android.widget.Toast.LENGTH_LONG).show()
+        col.addView(keypad)
+        android.widget.Toast.makeText(this, "DEBUG: col childCount after=" + col.childCount, android.widget.Toast.LENGTH_LONG).show()
 
         nextButton.setOnClickListener {
             val playerId = idInput.text.toString().trim()
