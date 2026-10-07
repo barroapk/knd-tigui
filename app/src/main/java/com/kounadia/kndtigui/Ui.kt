@@ -192,6 +192,7 @@ object Ui {
 
         val root = LinearLayout(context)
         root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(0xFF4444FF.toInt())
         root.layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             0,

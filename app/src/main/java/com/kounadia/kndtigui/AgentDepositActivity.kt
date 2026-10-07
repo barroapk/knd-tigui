@@ -63,6 +63,7 @@ class AgentDepositActivity : AppCompatActivity() {
     private fun newRootColumn(): LinearLayout {
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
+        col.layoutParams = ViewGroup.LayoutParams(MATCH, MATCH)
         col.setPadding(dp(20), dp(40), dp(20), dp(20))
         setContentView(col)
         return col
