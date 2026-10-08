@@ -47,6 +47,10 @@ class AdminActivity : AppCompatActivity() {
     }
 
     private var opsSub = "queue"
+    private var financeSub = "todo"
+    private var agentsOverview = JSONArray()
+    private var agentsLoaded = false
+    private var agentsLoading = false
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val handler = Handler(Looper.getMainLooper())
@@ -842,20 +846,201 @@ class AdminActivity : AppCompatActivity() {
         }
     }
 
+    private fun agentStatus(status: String): Pair<String, Int> = when (status) {
+        "ACTIVE" -> Pair("Actif", Ui.SUCCESS)
+        "SUSPENDED" -> Pair("Suspendu", Ui.WARNING)
+        "DISABLED" -> Pair("Désactivé", Ui.ERROR)
+        else -> Pair(status, Ui.TEXT2)
+    }
+
+    private fun monthLabel(iso: String): String {
+        val names = listOf(
+            "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+        )
+        if (iso.length < 7) return iso
+        val m = iso.substring(5, 7).toIntOrNull() ?: return iso
+        return names.getOrElse(m - 1) { iso } + " " + iso.substring(0, 4)
+    }
+
+    private fun commissionStatusLabel(m: JSONObject): String = when (str(m, "status")) {
+        "PAID" -> {
+            val ref = str(m, "paymentReference")
+            "Payé le " + shortDate(str(m, "paidAt")).substringBefore(' ') + (if (ref.isNotEmpty()) " · $ref" else "")
+        }
+        "IN_PROGRESS" -> "Mois en cours"
+        "CALCULATED" -> "Calculé, à payer"
+        else -> "À calculer"
+    }
+
+    private fun loadAgentsOverview() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (agentsLoading) return
+        agentsLoading = true
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                agentsOverview = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/admin/agent-commissions/agents-overview", token))
+                }
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    agentsLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+            } catch (e: Exception) {
+            }
+            agentsLoaded = true
+            agentsLoading = false
+            if (currentTab == Tab.AGENTS) renderTab()
+        }
+    }
+
+    private fun reloadAgentsOverview() {
+        agentsLoaded = false
+        agentsLoading = false
+        renderTab()
+    }
+
     private fun buildAgentsTab(content: LinearLayout) {
         header(content, "Agents", "Réseau de points de vente")
         content.addView(Ui.button(this, "Nouvel agent") { showNewAgentSheet() })
-        val note = t(
-            "La liste des agents, leur fiche et la suspension arrivent à l'étape suivante.",
+
+        if (!agentsLoaded && !agentsLoading) loadAgentsOverview()
+        if (!agentsLoaded) {
+            val loadingText = t("Chargement…", 13f, Ui.TEXT2)
+            loadingText.setPadding(0, dp(12), 0, 0)
+            content.addView(loadingText)
+            return
+        }
+
+        if (agentsOverview.length() == 0) {
+            emptyState(content, "Aucun agent. Créez le premier avec « Nouvel agent ».")
+            return
+        }
+
+        sectionTitle(content, "${agentsOverview.length()} agent(s)")
+        for (i in 0 until agentsOverview.length()) {
+            content.addView(agentCard(agentsOverview.getJSONObject(i)))
+        }
+    }
+
+    private fun agentCard(a: JSONObject): View {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.setPadding(dp(16), dp(14), dp(16), dp(14))
+        card.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(0, dp(10), 0, 0)
+        card.layoutParams = lp
+
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        val name = t(str(a, "companyName"), 16f, Ui.TEXT, true)
+        name.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        top.addView(name)
+        val (label, color) = agentStatus(str(a, "status"))
+        top.addView(Ui.pill(this, label, color))
+        card.addView(top)
+
+        card.addView(t(str(a, "agentCode") + " · " + str(a, "firstName") + " " + str(a, "lastName"), 12f, Ui.TEXT2))
+        val line = t(
+            "Ce mois : dépôts " + fcfa(a.optDouble("monthDepositVolume", 0.0)) +
+                " · retraits " + fcfa(a.optDouble("monthWithdrawalVolume", 0.0)),
             12f, Ui.TEXT2,
         )
-        note.setPadding(0, dp(14), 0, 0)
-        content.addView(note)
+        line.setPadding(0, dp(6), 0, 0)
+        card.addView(line)
+        card.addView(t("Commission du mois : " + fcfa(a.optDouble("monthCommission", 0.0)), 13f, Ui.TEXT, true))
+
+        card.setOnClickListener { showAgentDetailSheet(a) }
+        return card
+    }
+
+    private fun showAgentDetailSheet(a: JSONObject) {
+        val id = str(a, "id")
+        val (sheet, content) = Ui.bottomSheet(this)
+
+        content.addView(centered(str(a, "companyName"), 20f, Ui.TEXT, true))
+        val (statusLabel, _) = agentStatus(str(a, "status"))
+        content.addView(Ui.section(this, "Agent", listOf(
+            "Code" to str(a, "agentCode"),
+            "Nom" to (str(a, "firstName") + " " + str(a, "lastName")),
+            "Orange Money" to str(a, "orangeMoneyPhone"),
+            "Statut" to statusLabel,
+            "Inscrit le" to longDate(str(a, "createdAt")),
+        )))
+
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        content.addView(box)
+        val loadingText = t("Chargement des performances…", 13f, Ui.TEXT2)
+        loadingText.setPadding(0, dp(12), 0, 0)
+        box.addView(loadingText)
+        content.addView(Ui.button(this, "Fermer", "secondary") { sheet.dismiss() })
+        sheet.show()
+
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                val response = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "GET", "/admin/agent-commissions/agent-history/$id", token))
+                }
+                val months = response.getJSONArray("months")
+                box.removeAllViews()
+                for (i in 0 until months.length()) {
+                    val m = months.getJSONObject(i)
+                    box.addView(Ui.section(this@AdminActivity, monthLabel(str(m, "periodStart")), listOf(
+                        "Dépôts" to fcfa(m.optDouble("depositVolume", 0.0)),
+                        "Retraits" to fcfa(m.optDouble("withdrawalVolume", 0.0)),
+                        "Commission" to fcfa(m.optDouble("totalCommission", 0.0)),
+                        "Statut" to commissionStatusLabel(m),
+                    )))
+                }
+            } catch (e: Exception) {
+                box.removeAllViews()
+                box.addView(t("Impossible de charger les performances.", 13f, Ui.ERROR))
+            }
+        }
     }
 
     private fun buildFinanceTab(content: LinearLayout) {
-        header(content, "Finances", "Retraits et commissions des agents")
-        buildAgentWithdrawalsSection(content)
+        header(content, "Finances", "Retraits des agents")
+
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.addView(chip("À traiter", financeSub == "todo") { financeSub = "todo"; renderTab() })
+        row.addView(chip("En cours", financeSub == "progress") { financeSub = "progress"; renderTab() })
+        row.addView(chip("Clôturés", financeSub == "closed") { financeSub = "closed"; renderTab() })
+        content.addView(row)
+        content.addView(spacer(12))
+
+        if (!agentWithdrawalsLoaded && !agentWithdrawalsLoading) loadAgentWithdrawals()
+        if (!agentWithdrawalsLoaded) {
+            val loadingText = t("Chargement…", 13f, Ui.TEXT2)
+            loadingText.setPadding(0, dp(12), 0, 0)
+            content.addView(loadingText)
+            return
+        }
+
+        var shown = 0
+        for (i in 0 until agentWithdrawals.length()) {
+            val w = agentWithdrawals.getJSONObject(i)
+            val st = str(w, "status")
+            val match = when (financeSub) {
+                "todo" -> st == "CREATED"
+                "progress" -> st == "PROCESSING"
+                else -> st == "COMPLETED" || st == "FAILED" || st == "CANCELLED"
+            }
+            if (match) {
+                shown++
+                content.addView(agentWithdrawalCard(w))
+            }
+        }
+        if (shown == 0) emptyState(content, "Aucun retrait dans cette catégorie.")
     }
 
     private fun buildAdmin(content: LinearLayout) {
@@ -1580,6 +1765,7 @@ class AdminActivity : AppCompatActivity() {
                     JSONObject(ApiClient.request(base, "POST", "/agents", token, body))
                 }
                 sheet.dismiss()
+                reloadAgentsOverview()
                 showAgentCreatedSheet(created, password)
             } catch (e: ApiException) {
                 onDone()

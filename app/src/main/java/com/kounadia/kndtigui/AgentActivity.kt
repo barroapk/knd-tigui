@@ -127,7 +127,7 @@ class AgentActivity : AppCompatActivity() {
                 root.addView(Ui.text(this, "Commission", 16f, Ui.TEXT, true))
                 root.addView(spacer(10))
                 root.addView(scroll)
-                val cached = cacheRead("commission")
+                val cached = cacheRead("commission_history")
                 if (cached != null) showCommission(box, JSONObject(cached))
                 loadCommission(box)
             }
@@ -502,9 +502,9 @@ class AgentActivity : AppCompatActivity() {
                 val base = ConfigStorage.getApiBaseUrl(this@AgentActivity)
                 val token = SessionStorage.getToken(this@AgentActivity) ?: return@launch
                 val response = withContext(Dispatchers.IO) {
-                    JSONObject(ApiClient.request(base, "GET", "/agents/commissions", token, null))
+                    JSONObject(ApiClient.request(base, "GET", "/agents/commissions/history", token, null))
                 }
-                cacheWrite("commission", response.toString())
+                cacheWrite("commission_history", response.toString())
                 showCommission(box, response)
             } catch (_: Exception) {
                 // Le cache local reste affiche.
@@ -512,21 +512,55 @@ class AgentActivity : AppCompatActivity() {
         }
     }
 
+    private fun monthLabel(iso: String): String {
+        val names = listOf(
+            "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+        )
+        if (iso.length < 7) return iso
+        val m = iso.substring(5, 7).toIntOrNull() ?: return iso
+        return names.getOrElse(m - 1) { iso } + " " + iso.substring(0, 4)
+    }
+
     private fun showCommission(box: LinearLayout, o: JSONObject) {
         box.removeAllViews()
+        val months = o.optJSONArray("months") ?: return
 
-        val rows = listOf(
-            "Dépôts réussis" to "${formatAmount(o.optLong("depositVolume", 0))} FCFA",
-            "Commission sur dépôts" to "${formatAmount(o.optLong("depositCommission", 0))} FCFA",
-            "Retraits payés" to "${formatAmount(o.optLong("withdrawalVolume", 0))} FCFA",
-            "Commission sur retraits" to "${formatAmount(o.optLong("withdrawalCommission", 0))} FCFA",
-            "Total du mois" to "${formatAmount(o.optLong("totalCommission", 0))} FCFA",
-        )
-        box.addView(Ui.section(this, "Mois en cours", rows))
+        var shown = 0
+        for (i in 0 until months.length()) {
+            val m = months.getJSONObject(i)
+            val deposits = m.optLong("depositVolume", 0)
+            val withdrawals = m.optLong("withdrawalVolume", 0)
+            val total = m.optLong("totalCommission", 0)
+            // Les mois anciens sans aucune activite ne sont pas affiches.
+            if (i > 0 && deposits == 0L && withdrawals == 0L && total == 0L) continue
+
+            val status = m.optString("status")
+            val statusText = when (status) {
+                "PAID" -> {
+                    val paidAt = if (m.isNull("paidAt")) "" else m.optString("paidAt")
+                    "Payé le " + shortDate(paidAt).substringBefore(' ')
+                }
+                "IN_PROGRESS" -> "Mois en cours"
+                else -> "En attente de paiement"
+            }
+
+            box.addView(Ui.section(this, monthLabel(m.optString("periodStart")), listOf(
+                "Dépôts réussis" to "${formatAmount(deposits)} FCFA",
+                "Retraits payés" to "${formatAmount(withdrawals)} FCFA",
+                "Commission" to "${formatAmount(total)} FCFA",
+                "Statut" to statusText,
+            )))
+            shown++
+        }
+
+        if (shown == 0) {
+            box.addView(Ui.text(this, "Aucune activité pour l'instant.", 13f, Ui.TEXT2))
+        }
 
         val note = Ui.text(
             this,
-            "Seules les opérations terminées comptent. La commission du mois est payée entre le 3 et le 5 du mois suivant.",
+            "Seules les opérations terminées comptent. La commission d'un mois est payée entre le 3 et le 5 du mois suivant.",
             12f, Ui.TEXT2,
         )
         note.setPadding(0, dp(14), 0, 0)
