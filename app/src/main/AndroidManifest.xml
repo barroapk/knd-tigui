@@ -28,6 +28,11 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".AdminActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".AgentActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />

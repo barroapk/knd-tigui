@@ -165,10 +165,10 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun routeToRoleActivity(role: String?) {
-        val target = if (role == "AGENT") {
-            Intent(this, AgentActivity::class.java)
-        } else {
-            Intent(this, ManagerActivity::class.java)
+        val target = when (role) {
+            "AGENT" -> Intent(this, AgentActivity::class.java)
+            "ADMIN" -> Intent(this, AdminActivity::class.java)
+            else -> Intent(this, ManagerActivity::class.java)
         }
         target.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         startActivity(target)
