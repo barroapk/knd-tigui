@@ -38,13 +38,15 @@ private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 class AdminActivity : AppCompatActivity() {
 
-    private enum class Tab(val label: String, val iconRes: Int) {
-        HOME("Accueil", R.drawable.ic_home),
-        QUEUE("À traiter", R.drawable.ic_inbox),
-        HISTORY("Historique", R.drawable.ic_history),
-        PAYMENTS("Paiements", R.drawable.ic_alert),
-        ADMIN("Admin", R.drawable.ic_users),
+    private enum class Tab(val label: String) {
+        HOME("Accueil"),
+        OPS("Opérations"),
+        AGENTS("Agents"),
+        FINANCE("Finances"),
+        MORE("Plus"),
     }
+
+    private var opsSub = "queue"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val handler = Handler(Looper.getMainLooper())
@@ -323,20 +325,14 @@ class AdminActivity : AppCompatActivity() {
     private fun buildNav() {
         navBar?.let { root.removeView(it) }
         val bar = LinearLayout(this)
-        bar.orientation = LinearLayout.VERTICAL
-        bar.setBackgroundColor(Ui.SURFACE)
-
-        val divider = View(this)
-        divider.setBackgroundColor(Ui.BORDER)
-        bar.addView(divider, LinearLayout.LayoutParams(MATCH, 1))
-
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        bar.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
-
-        root.addView(bar, LinearLayout.LayoutParams(MATCH, WRAP))
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.background = Ui.rounded(this, Ui.ELEVATED, 22, Ui.BORDER)
+        bar.setPadding(dp(6), dp(6), dp(6), dp(6))
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(dp(12), dp(8), dp(12), dp(18))
+        root.addView(bar, lp)
         navBar = bar
-        navRow = row
+        navRow = bar
         updateNav()
     }
 
@@ -354,34 +350,26 @@ class AdminActivity : AppCompatActivity() {
         val toProcess = countToProcess()
 
         for (tab in Tab.values()) {
-            if (tab == Tab.ADMIN && SessionStorage.getRole(this) != "ADMIN") continue
             val selected = tab == currentTab
-            val color = if (selected) Ui.PRIMARY else Ui.TEXT2
-            val item = LinearLayout(this)
-            item.orientation = LinearLayout.VERTICAL
-            item.gravity = Gravity.CENTER
-            item.setPadding(0, dp(10), 0, dp(10))
-            val iconBox = FrameLayout(this)
-            val iv = android.widget.ImageView(this)
-            iv.setImageResource(tab.iconRes)
-            iv.setColorFilter(color)
-            iconBox.addView(iv, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
-            if (tab == Tab.QUEUE && toProcess > 0) {
+            val item = FrameLayout(this)
+            item.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+
+            val label = t(tab.label, 11f, if (selected) 0xFFFFFFFF.toInt() else Ui.TEXT2, true)
+            label.gravity = Gravity.CENTER
+            label.maxLines = 1
+            label.setPadding(0, dp(12), 0, dp(12))
+            if (selected) label.background = Ui.rounded(this, Ui.PRIMARY, 16)
+            item.addView(label, FrameLayout.LayoutParams(MATCH, WRAP))
+
+            if (tab == Tab.OPS && toProcess > 0) {
                 val badge = t(if (toProcess > 9) "9+" else toProcess.toString(), 10f, 0xFFFFFFFF.toInt(), true)
                 badge.gravity = Gravity.CENTER
                 badge.background = Ui.circle(Ui.ERROR)
-                iconBox.addView(badge, FrameLayout.LayoutParams(dp(16), dp(16), Gravity.TOP or Gravity.END))
+                item.addView(badge, FrameLayout.LayoutParams(dp(16), dp(16), Gravity.TOP or Gravity.END))
             }
-            val iconParams = LinearLayout.LayoutParams(dp(36), dp(28))
-            iconParams.gravity = Gravity.CENTER_HORIZONTAL
-            item.addView(iconBox, iconParams)
-            val labelView = t(tab.label, 11f, color, selected)
-            labelView.gravity = Gravity.CENTER
-            labelView.maxLines = 1
-            labelView.setPadding(0, dp(2), 0, 0)
-            item.addView(labelView, LinearLayout.LayoutParams(MATCH, WRAP))
+
             item.setOnClickListener { setTab(tab) }
-            row.addView(item, LinearLayout.LayoutParams(0, WRAP, 1f))
+            row.addView(item)
         }
     }
 
@@ -405,10 +393,10 @@ class AdminActivity : AppCompatActivity() {
 
         when (currentTab) {
             Tab.HOME -> buildHome(content)
-            Tab.QUEUE -> buildQueue(content)
-            Tab.HISTORY -> buildHistory(content)
-            Tab.PAYMENTS -> buildPayments(content)
-            Tab.ADMIN -> buildAdmin(content)
+            Tab.OPS -> buildOps(content)
+            Tab.AGENTS -> buildAgentsTab(content)
+            Tab.FINANCE -> buildFinanceTab(content)
+            Tab.MORE -> buildAdmin(content)
         }
 
         body.addView(sv, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -420,7 +408,7 @@ class AdminActivity : AppCompatActivity() {
                 return true
             }
         })
-        if (currentTab == Tab.HISTORY) {
+        if (currentTab == Tab.OPS && opsSub == "history") {
             content.findViewWithTag<android.widget.EditText>("history_search")?.let { field ->
                 field.requestFocus()
                 field.setSelection(field.text.length)
@@ -555,7 +543,7 @@ class AdminActivity : AppCompatActivity() {
             sectionTitle(content, "À traiter maintenant")
             addDepositCards(content, deposits, 3)
             if (deposits.length() > 3) {
-                linkText(content, "Voir les ${deposits.length()} opérations") { setTab(Tab.QUEUE) }
+                linkText(content, "Voir les ${deposits.length()} opérations") { openOps("queue") }
             }
         }
 
@@ -566,7 +554,7 @@ class AdminActivity : AppCompatActivity() {
         } else {
             addDepositCards(content, items, 5)
             if (items.length() > 5) {
-                linkText(content, "Voir tout l'historique") { setTab(Tab.HISTORY) }
+                linkText(content, "Voir tout l'historique") { openOps("history") }
             }
         }
     }
@@ -833,8 +821,45 @@ class AdminActivity : AppCompatActivity() {
         }
     }
 
+    private fun openOps(sub: String) {
+        opsSub = sub
+        setTab(Tab.OPS)
+    }
+
+    private fun buildOps(content: LinearLayout) {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.addView(chip("À traiter", opsSub == "queue") { opsSub = "queue"; renderTab() })
+        row.addView(chip("Historique", opsSub == "history") { opsSub = "history"; renderTab() })
+        row.addView(chip("À vérifier", opsSub == "verify") { opsSub = "verify"; renderTab() })
+        content.addView(row)
+        content.addView(spacer(12))
+
+        when (opsSub) {
+            "history" -> buildHistory(content)
+            "verify" -> buildPayments(content)
+            else -> buildQueue(content)
+        }
+    }
+
+    private fun buildAgentsTab(content: LinearLayout) {
+        header(content, "Agents", "Réseau de points de vente")
+        content.addView(Ui.button(this, "Nouvel agent") { showNewAgentSheet() })
+        val note = t(
+            "La liste des agents, leur fiche et la suspension arrivent à l'étape suivante.",
+            12f, Ui.TEXT2,
+        )
+        note.setPadding(0, dp(14), 0, 0)
+        content.addView(note)
+    }
+
+    private fun buildFinanceTab(content: LinearLayout) {
+        header(content, "Finances", "Retraits et commissions des agents")
+        buildAgentWithdrawalsSection(content)
+    }
+
     private fun buildAdmin(content: LinearLayout) {
-        header(content, "Administration", "Téléphone hôte des SMS")
+        header(content, "Plus", "Configuration, équipe et bonus")
 
         val configured = ConfigStorage.isConfigured(this)
         val label = ConfigStorage.getHostLabel(this)
@@ -862,11 +887,6 @@ class AdminActivity : AppCompatActivity() {
         if (configured) {
             content.addView(Ui.button(this, "Retirer ce téléphone", "danger") { confirmRemoveHost() })
         }
-
-        sectionTitle(content, "Agents")
-        content.addView(Ui.button(this, "Nouvel agent", "secondary") { showNewAgentSheet() })
-
-        buildAgentWithdrawalsSection(content)
 
         sectionTitle(content, "Gestionnaires")
         content.addView(Ui.button(this, "Nouveau gestionnaire", "secondary") { showNewManagerSheet() })
@@ -933,7 +953,7 @@ class AdminActivity : AppCompatActivity() {
             }
             campaignsLoaded = true
             campaignsLoading = false
-            if (currentTab == Tab.ADMIN) renderTab()
+            if (currentTab != Tab.HOME && currentTab != Tab.OPS) renderTab()
         }
     }
 
@@ -1322,7 +1342,7 @@ class AdminActivity : AppCompatActivity() {
             }
             devicesLoaded = true
             devicesLoading = false
-            if (currentTab == Tab.ADMIN) renderTab()
+            if (currentTab != Tab.HOME && currentTab != Tab.OPS) renderTab()
         }
     }
 
@@ -1479,7 +1499,7 @@ class AdminActivity : AppCompatActivity() {
             }
             managersLoaded = true
             managersLoading = false
-            if (currentTab == Tab.ADMIN) renderTab()
+            if (currentTab != Tab.HOME && currentTab != Tab.OPS) renderTab()
         }
     }
 
@@ -1627,7 +1647,7 @@ class AdminActivity : AppCompatActivity() {
             }
             agentWithdrawalsLoaded = true
             agentWithdrawalsLoading = false
-            if (currentTab == Tab.ADMIN) renderTab()
+            if (currentTab != Tab.HOME && currentTab != Tab.OPS) renderTab()
         }
     }
 
