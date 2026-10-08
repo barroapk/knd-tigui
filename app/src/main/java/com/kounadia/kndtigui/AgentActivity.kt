@@ -160,7 +160,7 @@ class AgentActivity : AppCompatActivity() {
         actionsRow.addView(depositButton)
 
         val withdrawButton = Ui.button(this, "⬆ Retirer", "danger") {
-            Toast.makeText(this, "Écran de retrait à venir", Toast.LENGTH_SHORT).show()
+            startActivity(Intent(this, AgentWithdrawActivity::class.java))
         }
         val withdrawLp = LinearLayout.LayoutParams(0, WRAP, 1f)
         withdrawLp.setMargins(dp(8), 0, 0, 0)
