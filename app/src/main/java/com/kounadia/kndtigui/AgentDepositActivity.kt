@@ -376,7 +376,7 @@ class AgentDepositActivity : AppCompatActivity() {
         val sv = ScrollView(this)
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
-        col.setPadding(dp(24), dp(48), dp(24), dp(32))
+        col.setPadding(dp(24), dp(28), dp(24), dp(12))
         sv.addView(col)
         setContentView(sv)
 
@@ -386,9 +386,9 @@ class AgentDepositActivity : AppCompatActivity() {
         card.orientation = LinearLayout.HORIZONTAL
         card.gravity = Gravity.CENTER_VERTICAL
         card.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
-        card.setPadding(dp(16), dp(14), dp(16), dp(14))
+        card.setPadding(dp(14), dp(8), dp(14), dp(8))
         val cardLp = LinearLayout.LayoutParams(MATCH, WRAP)
-        cardLp.setMargins(0, 0, 0, dp(20))
+        cardLp.setMargins(0, 0, 0, dp(8))
         card.layoutParams = cardLp
 
         val icon = t("✓", 16f, 0xFF2ECC71.toInt(), true)
@@ -402,11 +402,9 @@ class AgentDepositActivity : AppCompatActivity() {
         card.addView(textCol)
         col.addView(card)
 
-        col.addView(t("Saisissez le montant", 14f, Ui.TEXT2))
-        col.addView(spacer(8))
 
         val amountInput = field("Montant", true)
-        amountInput.textSize = 28f
+        amountInput.textSize = 24f
         amountInput.gravity = Gravity.CENTER
         amountInput.inputType = InputType.TYPE_CLASS_NUMBER
         val amountRow = LinearLayout(this)
@@ -435,7 +433,7 @@ class AgentDepositActivity : AppCompatActivity() {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
 
-        col.addView(spacer(12))
+        col.addView(spacer(6))
 
         val quickRow = LinearLayout(this)
         quickRow.orientation = LinearLayout.HORIZONTAL
@@ -453,18 +451,13 @@ class AgentDepositActivity : AppCompatActivity() {
             quickRow.addView(btn)
         }
         col.addView(quickRow)
-        col.addView(spacer(12))
-
-        col.addView(spacer(16))
-        col.addView(spacer(12))
 
         val messageText = t("", 13f, Ui.ERROR)
         col.addView(messageText)
-        col.addView(spacer(8))
 
         val confirmButton = Ui.button(this, "Confirmer le dépôt") { }
         col.addView(confirmButton)
-        col.addView(spacer(10))
+        col.addView(spacer(6))
         col.addView(Ui.numericKeypad(this, amountInput, allowDecimal = false) { syncFromInput() })
 
         confirmButton.setOnClickListener {
