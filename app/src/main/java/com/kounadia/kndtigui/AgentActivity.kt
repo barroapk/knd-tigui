@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import kotlinx.coroutines.CoroutineScope
@@ -20,15 +21,18 @@ import org.json.JSONObject
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+private const val HISTORY_LIMIT = 15
 
 /**
- * Dashboard agent : identite (entreprise + code PDV), service client,
- * resume du mois en cours (depots/retraits/commission), acces
- * Deposer/Retirer, et placeholder historique (construit a l'etape
- * suivante de la Phase 9).
+ * Espace agent : en-tete, onglets fixes en bas (Accueil / Notifications /
+ * Commission). Sur l'accueil, seule la liste d'historique defile ; la carte
+ * des montants et les boutons restent fixes. Tout s'affiche d'abord depuis
+ * le cache local, puis se met a jour depuis le serveur.
  */
 class AgentActivity : AppCompatActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var currentTab = 0
+    private var firstResume = true
 
     private fun dp(value: Int): Int = Ui.dp(this, value)
 
@@ -45,6 +49,10 @@ class AgentActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (firstResume) {
+            firstResume = false
+            return
+        }
         if (SessionStorage.isLoggedIn(this) && SessionStorage.getRole(this) == "AGENT") {
             render()
         }
@@ -67,23 +75,75 @@ class AgentActivity : AppCompatActivity() {
     private fun formatAmount(value: Long): String =
         value.toString().reversed().chunked(3).joinToString(" ").reversed()
 
-    private fun render() {
-        val sv = ScrollView(this)
-        val col = LinearLayout(this)
-        col.orientation = LinearLayout.VERTICAL
-        col.setPadding(dp(24), dp(48), dp(24), dp(32))
-        sv.addView(col)
-        setContentView(sv)
+    private fun shortDate(iso: String): String =
+        if (iso.length >= 16) "${iso.substring(8, 10)}/${iso.substring(5, 7)} ${iso.substring(11, 16)}" else iso
 
-        // ---------- En-tete ----------
+    // ---------- cache local (notifications, commission) ----------
+
+    private fun cacheRead(name: String): String? =
+        getSharedPreferences("knd_tigui_agent_misc", MODE_PRIVATE)
+            .getString(name + "_" + (SessionStorage.getUserId(this) ?: "none"), null)
+
+    private fun cacheWrite(name: String, value: String) {
+        getSharedPreferences("knd_tigui_agent_misc", MODE_PRIVATE).edit()
+            .putString(name + "_" + (SessionStorage.getUserId(this) ?: "none"), value)
+            .apply()
+    }
+
+    // ---------- structure de l'ecran ----------
+
+    private fun render() {
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setPadding(dp(20), dp(28), dp(20), 0)
+        setContentView(root, ViewGroup.LayoutParams(MATCH, MATCH))
+
+        root.addView(buildHeader())
+        root.addView(spacer(14))
+
+        val scroll = ScrollView(this)
+        scroll.layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+        scroll.isVerticalScrollBarEnabled = false
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        scroll.addView(box)
+
+        when (currentTab) {
+            0 -> {
+                buildHomeFixedPart(root)
+                root.addView(scroll)
+                showHistory(box, AgentHistoryCache.load(this))
+                loadHistory(box)
+            }
+            1 -> {
+                root.addView(Ui.text(this, "Notifications", 16f, Ui.TEXT, true))
+                root.addView(spacer(10))
+                root.addView(scroll)
+                val cached = cacheRead("notifications")
+                showNotifications(box, if (cached != null) JSONArray(cached) else null)
+                loadNotifications(box)
+            }
+            else -> {
+                root.addView(Ui.text(this, "Commission", 16f, Ui.TEXT, true))
+                root.addView(spacer(10))
+                root.addView(scroll)
+                val cached = cacheRead("commission")
+                if (cached != null) showCommission(box, JSONObject(cached))
+                loadCommission(box)
+            }
+        }
+
+        root.addView(buildTabBar())
+    }
+
+    private fun buildHeader(): LinearLayout {
         val headerRow = LinearLayout(this)
         headerRow.orientation = LinearLayout.HORIZONTAL
         headerRow.gravity = Gravity.CENTER_VERTICAL
 
         val identityCol = LinearLayout(this)
         identityCol.orientation = LinearLayout.VERTICAL
-        val identityLp = LinearLayout.LayoutParams(0, WRAP, 1f)
-        identityCol.layoutParams = identityLp
+        identityCol.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         val companyName = SessionStorage.getCompanyName(this) ?: (SessionStorage.getDisplayName(this) ?: "")
         val agentCode = SessionStorage.getAgentCode(this) ?: ""
         identityCol.addView(Ui.text(this, companyName, 18f, Ui.TEXT, true))
@@ -93,62 +153,79 @@ class AgentActivity : AppCompatActivity() {
         headerRow.addView(identityCol)
 
         val whatsappButton = Ui.text(this, "WhatsApp", 13f, Ui.TEXT)
+        whatsappButton.setPadding(dp(12), dp(8), dp(4), dp(8))
         whatsappButton.setOnClickListener {
             try {
-                val uri = Uri.parse("https://wa.me/22655337782")
-                startActivity(Intent(Intent.ACTION_VIEW, uri))
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/22655337782")))
             } catch (_: Exception) {
                 Toast.makeText(this, "Impossible d'ouvrir WhatsApp", Toast.LENGTH_SHORT).show()
             }
         }
         headerRow.addView(whatsappButton)
-        col.addView(headerRow)
-        col.addView(spacer(24))
+        return headerRow
+    }
 
-        // ---------- Carte resume (placeholder pendant le chargement) ----------
+    /** Barre flottante : fond et marges distincts des boutons systeme du telephone. */
+    private fun buildTabBar(): LinearLayout {
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.background = Ui.rounded(this, Ui.ELEVATED, 22, Ui.BORDER)
+        bar.setPadding(dp(6), dp(6), dp(6), dp(6))
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(dp(4), dp(10), dp(4), dp(18))
+        bar.layoutParams = lp
+
+        val labels = listOf("Accueil", "Notifications", "Commission")
+        labels.forEachIndexed { index, label ->
+            val selected = index == currentTab
+            val tab = Ui.text(this, label, 13f, if (selected) 0xFFFFFFFF.toInt() else Ui.TEXT2, true)
+            tab.gravity = Gravity.CENTER
+            tab.setPadding(0, dp(12), 0, dp(12))
+            if (selected) tab.background = Ui.rounded(this, Ui.PRIMARY, 16)
+            tab.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            tab.setOnClickListener {
+                if (currentTab != index) {
+                    currentTab = index
+                    render()
+                }
+            }
+            bar.addView(tab)
+        }
+        return bar
+    }
+
+    // ---------- onglet Accueil ----------
+
+    private fun buildHomeFixedPart(root: LinearLayout) {
         val summaryCard = LinearLayout(this)
         summaryCard.orientation = LinearLayout.VERTICAL
         summaryCard.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
-        summaryCard.setPadding(dp(18), dp(18), dp(18), dp(18))
-        val summaryLp = LinearLayout.LayoutParams(MATCH, WRAP)
-        summaryLp.setMargins(0, 0, 0, dp(20))
-        summaryCard.layoutParams = summaryLp
+        summaryCard.setPadding(dp(18), dp(14), dp(18), dp(14))
+        summaryCard.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
 
-        val summaryTitle = Ui.text(this, "Ce mois-ci", 13f, Ui.TEXT2)
-        summaryCard.addView(summaryTitle)
-        summaryCard.addView(spacer(8))
+        summaryCard.addView(Ui.text(this, "Ce mois-ci", 13f, Ui.TEXT2))
+        summaryCard.addView(spacer(6))
 
-        val row1 = LinearLayout(this)
-        row1.orientation = LinearLayout.HORIZONTAL
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
 
-        val depositCol = LinearLayout(this)
-        depositCol.orientation = LinearLayout.VERTICAL
-        depositCol.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-        depositCol.addView(Ui.text(this, "Dépôts", 12f, Ui.TEXT2))
-        val depositValue = Ui.text(this, "—", 20f, 0xFF2ECC71.toInt(), true)
-        depositCol.addView(depositValue)
-        row1.addView(depositCol)
+        fun column(title: String, color: Int): TextView {
+            val c = LinearLayout(this)
+            c.orientation = LinearLayout.VERTICAL
+            c.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            c.addView(Ui.text(this, title, 12f, Ui.TEXT2))
+            val value = Ui.text(this, "—", 18f, color, true)
+            c.addView(value)
+            row.addView(c)
+            return value
+        }
 
-        val withdrawalCol = LinearLayout(this)
-        withdrawalCol.orientation = LinearLayout.VERTICAL
-        withdrawalCol.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-        withdrawalCol.addView(Ui.text(this, "Retraits", 12f, Ui.TEXT2))
-        val withdrawalValue = Ui.text(this, "—", 20f, 0xFFFF5C5C.toInt(), true)
-        withdrawalCol.addView(withdrawalValue)
-        row1.addView(withdrawalCol)
+        val depositValue = column("Dépôts", 0xFF2ECC71.toInt())
+        val withdrawalValue = column("Retraits", 0xFFFF5C5C.toInt())
+        val commissionValue = column("Commission", Ui.TEXT)
+        summaryCard.addView(row)
+        root.addView(summaryCard)
 
-        val commissionCol = LinearLayout(this)
-        commissionCol.orientation = LinearLayout.VERTICAL
-        commissionCol.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-        commissionCol.addView(Ui.text(this, "Commission", 12f, Ui.TEXT2))
-        val commissionValue = Ui.text(this, "—", 20f, Ui.TEXT, true)
-        commissionCol.addView(commissionValue)
-        row1.addView(commissionCol)
-
-        summaryCard.addView(row1)
-        col.addView(summaryCard)
-
-        // ---------- Boutons Deposer / Retirer ----------
         val actionsRow = LinearLayout(this)
         actionsRow.orientation = LinearLayout.HORIZONTAL
 
@@ -156,7 +233,7 @@ class AgentActivity : AppCompatActivity() {
             startActivity(Intent(this, AgentDepositActivity::class.java))
         }
         val depositLp = LinearLayout.LayoutParams(0, WRAP, 1f)
-        depositLp.setMargins(0, 0, dp(8), 0)
+        depositLp.setMargins(0, dp(12), dp(6), 0)
         depositButton.layoutParams = depositLp
         actionsRow.addView(depositButton)
 
@@ -164,23 +241,40 @@ class AgentActivity : AppCompatActivity() {
             startActivity(Intent(this, AgentWithdrawActivity::class.java))
         }
         val withdrawLp = LinearLayout.LayoutParams(0, WRAP, 1f)
-        withdrawLp.setMargins(dp(8), 0, 0, 0)
+        withdrawLp.setMargins(dp(6), dp(12), 0, 0)
         withdrawButton.layoutParams = withdrawLp
         actionsRow.addView(withdrawButton)
+        root.addView(actionsRow)
 
-        col.addView(actionsRow)
-        col.addView(spacer(28))
+        root.addView(spacer(16))
+        root.addView(Ui.text(this, "Historique · $HISTORY_LIMIT dernières opérations", 15f, Ui.TEXT, true))
+        root.addView(spacer(8))
 
-        // ---------- Historique (placeholder) ----------
-        col.addView(Ui.text(this, "Historique", 16f, Ui.TEXT, true))
-        col.addView(spacer(12))
-        val historyBox = LinearLayout(this)
-        historyBox.orientation = LinearLayout.VERTICAL
-        col.addView(historyBox)
-
-        showHistory(historyBox, AgentHistoryCache.load(this))
-        loadHistory(historyBox)
+        val cached = cacheRead("summary")
+        if (cached != null) applySummary(JSONObject(cached), depositValue, withdrawalValue, commissionValue)
         loadSummary(depositValue, withdrawalValue, commissionValue)
+    }
+
+    private fun applySummary(o: JSONObject, d: TextView, w: TextView, c: TextView) {
+        d.text = "${formatAmount(o.optLong("depositVolume", 0))} F"
+        w.text = "${formatAmount(o.optLong("withdrawalVolume", 0))} F"
+        c.text = "${formatAmount(o.optLong("totalCommission", 0))} F"
+    }
+
+    private fun loadSummary(d: TextView, w: TextView, c: TextView) {
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AgentActivity)
+                val token = SessionStorage.getToken(this@AgentActivity) ?: return@launch
+                val response = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "GET", "/agents/commissions", token, null))
+                }
+                cacheWrite("summary", response.toString())
+                applySummary(response, d, w, c)
+            } catch (_: Exception) {
+                // Echec silencieux : le dernier resume en cache reste affiche.
+            }
+        }
     }
 
     // ---------- historique ----------
@@ -208,7 +302,7 @@ class AgentActivity : AppCompatActivity() {
                 items.sortByDescending { it.optString("createdAt") }
 
                 val merged = JSONArray()
-                for (item in items.take(30)) merged.put(item)
+                for (item in items.take(HISTORY_LIMIT)) merged.put(item)
 
                 AgentHistoryCache.save(this@AgentActivity, merged)
                 showHistory(box, merged)
@@ -226,7 +320,8 @@ class AgentActivity : AppCompatActivity() {
             return
         }
 
-        for (i in 0 until items.length()) {
+        val count = minOf(items.length(), HISTORY_LIMIT)
+        for (i in 0 until count) {
             box.addView(historyRow(items.getJSONObject(i)))
         }
     }
@@ -244,9 +339,6 @@ class AgentActivity : AppCompatActivity() {
         val status = item.optString("status")
         return if (item.optString("kind") == "WITHDRAWAL") withdrawalStatus(status) else Ui.statusInfo(status)
     }
-
-    private fun shortDate(iso: String): String =
-        if (iso.length >= 16) "${iso.substring(8, 10)}/${iso.substring(5, 7)} ${iso.substring(11, 16)}" else iso
 
     private fun historyRow(item: JSONObject): View {
         val isDeposit = item.optString("kind") == "DEPOSIT"
@@ -353,11 +445,58 @@ class AgentActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadSummary(
-        depositValue: android.widget.TextView,
-        withdrawalValue: android.widget.TextView,
-        commissionValue: android.widget.TextView,
-    ) {
+    // ---------- onglet Notifications ----------
+
+    private fun loadNotifications(box: LinearLayout) {
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AgentActivity)
+                val token = SessionStorage.getToken(this@AgentActivity) ?: return@launch
+                val response = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/agents/notifications", token, null))
+                }
+                cacheWrite("notifications", response.toString())
+                showNotifications(box, response)
+            } catch (_: Exception) {
+                // Le cache local reste affiche.
+            }
+        }
+    }
+
+    private fun showNotifications(box: LinearLayout, items: JSONArray?) {
+        box.removeAllViews()
+
+        if (items == null) {
+            box.addView(Ui.text(this, "Chargement…", 13f, Ui.TEXT2))
+            return
+        }
+        if (items.length() == 0) {
+            box.addView(Ui.text(this, "Aucune information pour l'instant.", 13f, Ui.TEXT2))
+            return
+        }
+
+        for (i in 0 until items.length()) {
+            val n = items.getJSONObject(i)
+            val card = LinearLayout(this)
+            card.orientation = LinearLayout.VERTICAL
+            card.setPadding(dp(16), dp(14), dp(16), dp(14))
+            card.background = Ui.rounded(this, Ui.SURFACE, 14, Ui.BORDER)
+            val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+            lp.setMargins(0, 0, 0, dp(8))
+            card.layoutParams = lp
+
+            card.addView(Ui.text(this, n.optString("title"), 14f, Ui.TEXT, true))
+            card.addView(spacer(4))
+            card.addView(Ui.text(this, n.optString("message"), 13f, Ui.TEXT2))
+            card.addView(spacer(6))
+            card.addView(Ui.text(this, shortDate(n.optString("createdAt")), 11f, Ui.TEXT2))
+            box.addView(card)
+        }
+    }
+
+    // ---------- onglet Commission ----------
+
+    private fun loadCommission(box: LinearLayout) {
         scope.launch {
             try {
                 val base = ConfigStorage.getApiBaseUrl(this@AgentActivity)
@@ -365,17 +504,32 @@ class AgentActivity : AppCompatActivity() {
                 val response = withContext(Dispatchers.IO) {
                     JSONObject(ApiClient.request(base, "GET", "/agents/commissions", token, null))
                 }
-
-                val depositVolume = response.optLong("depositVolume", 0)
-                val withdrawalVolume = response.optLong("withdrawalVolume", 0)
-                val totalCommission = response.optLong("totalCommission", 0)
-
-                depositValue.text = "${formatAmount(depositVolume)} F"
-                withdrawalValue.text = "${formatAmount(withdrawalVolume)} F"
-                commissionValue.text = "${formatAmount(totalCommission)} F"
+                cacheWrite("commission", response.toString())
+                showCommission(box, response)
             } catch (_: Exception) {
-                // Echec silencieux : le dashboard reste utilisable sans le resume.
+                // Le cache local reste affiche.
             }
         }
+    }
+
+    private fun showCommission(box: LinearLayout, o: JSONObject) {
+        box.removeAllViews()
+
+        val rows = listOf(
+            "Dépôts réussis" to "${formatAmount(o.optLong("depositVolume", 0))} FCFA",
+            "Commission sur dépôts" to "${formatAmount(o.optLong("depositCommission", 0))} FCFA",
+            "Retraits payés" to "${formatAmount(o.optLong("withdrawalVolume", 0))} FCFA",
+            "Commission sur retraits" to "${formatAmount(o.optLong("withdrawalCommission", 0))} FCFA",
+            "Total du mois" to "${formatAmount(o.optLong("totalCommission", 0))} FCFA",
+        )
+        box.addView(Ui.section(this, "Mois en cours", rows))
+
+        val note = Ui.text(
+            this,
+            "Seules les opérations terminées comptent. La commission du mois est payée entre le 3 et le 5 du mois suivant.",
+            12f, Ui.TEXT2,
+        )
+        note.setPadding(0, dp(14), 0, 0)
+        box.addView(note)
     }
 }
