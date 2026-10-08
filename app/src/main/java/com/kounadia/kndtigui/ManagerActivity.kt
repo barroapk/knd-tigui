@@ -863,6 +863,9 @@ class ManagerActivity : AppCompatActivity() {
             content.addView(Ui.button(this, "Retirer ce téléphone", "danger") { confirmRemoveHost() })
         }
 
+        sectionTitle(content, "Agents")
+        content.addView(Ui.button(this, "Nouvel agent", "secondary") { showNewAgentSheet() })
+
         buildAgentWithdrawalsSection(content)
 
         sectionTitle(content, "Gestionnaires")
@@ -1484,6 +1487,122 @@ class ManagerActivity : AppCompatActivity() {
         managersLoaded = false
         managersLoading = false
         renderTab()
+    }
+
+    // ---------- creation d'agent (admin) ----------
+
+    private fun showNewAgentSheet() {
+        val (sheet, content) = Ui.bottomSheet(this)
+        sheet.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+
+        content.addView(centered("Nouvel agent", 20f, Ui.TEXT, true))
+        content.addView(spacer(12))
+
+        val firstNameInput = Ui.input(this, "Prénom")
+        val lastNameInput = Ui.input(this, "Nom")
+        val companyInput = Ui.input(this, "Nom de l'entreprise")
+        val phoneInput = Ui.input(this, "Numéro Orange Money (ex : 74123456)")
+        phoneInput.inputType = android.text.InputType.TYPE_CLASS_PHONE
+        val cnibInput = Ui.input(this, "Numéro CNIB")
+        cnibInput.inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        val passwordInput = Ui.input(this, "Mot de passe initial (6 caractères minimum)", password = true)
+
+        content.addView(firstNameInput)
+        content.addView(lastNameInput)
+        content.addView(companyInput)
+        content.addView(phoneInput)
+        content.addView(cnibInput)
+        content.addView(passwordInput)
+
+        var sending = false
+        content.addView(Ui.button(this, "Créer l'agent") {
+            val firstName = firstNameInput.text.toString().trim()
+            val lastName = lastNameInput.text.toString().trim()
+            val company = companyInput.text.toString().trim()
+            val phone = phoneInput.text.toString().trim()
+            val cnib = cnibInput.text.toString().trim()
+            val password = passwordInput.text.toString()
+
+            if (firstName.isEmpty() || lastName.isEmpty() || company.isEmpty() ||
+                phone.isEmpty() || cnib.isEmpty() || password.length < 6
+            ) {
+                Toast.makeText(this, "Tous les champs sont requis (mot de passe : 6 caractères minimum)", Toast.LENGTH_LONG).show()
+            } else if (!sending) {
+                sending = true
+                createAgent(sheet, firstName, lastName, company, phone, cnib, password) { sending = false }
+            }
+        })
+        sheet.show()
+    }
+
+    private fun createAgent(
+        sheet: android.app.Dialog,
+        firstName: String,
+        lastName: String,
+        company: String,
+        phone: String,
+        cnib: String,
+        password: String,
+        onDone: () -> Unit,
+    ) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                val body = JSONObject()
+                    .put("firstName", firstName)
+                    .put("lastName", lastName)
+                    .put("companyName", company)
+                    .put("orangeMoneyPhone", phone)
+                    .put("cnibNumber", cnib)
+                    .put("password", password)
+                val created = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "POST", "/agents", token, body))
+                }
+                sheet.dismiss()
+                showAgentCreatedSheet(created, password)
+            } catch (e: ApiException) {
+                onDone()
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@ManagerActivity, e.message, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                onDone()
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun showAgentCreatedSheet(agent: JSONObject, password: String) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        val loginPhone = str(agent, "orangeMoneyPhone").takeLast(8)
+
+        content.addView(centered("Agent créé ✅", 20f, Ui.TEXT, true))
+        content.addView(Ui.section(
+            this,
+            "Identifiants à remettre à l'agent",
+            listOf(
+                "Entreprise" to str(agent, "companyName"),
+                "Code agent" to str(agent, "agentCode"),
+                "Connexion" to loginPhone,
+                "Mot de passe" to password,
+            ),
+            copyable = setOf("Code agent", "Connexion", "Mot de passe"),
+            onCopy = { label, value -> copy(label, value) },
+        ))
+
+        val warning = t(
+            "L'agent se connecte avec son numéro Orange Money et ce mot de passe. " +
+                "Le mot de passe ne sera plus affiché : notez-le maintenant.",
+            12f, Ui.WARNING,
+        )
+        warning.setPadding(0, dp(12), 0, 0)
+        content.addView(warning)
+
+        content.addView(Ui.button(this, "Terminer") { sheet.dismiss() })
+        sheet.show()
     }
 
     // ---------- retraits agents (admin) ----------
