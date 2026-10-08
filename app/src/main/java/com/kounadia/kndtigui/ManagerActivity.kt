@@ -60,6 +60,9 @@ class ManagerActivity : AppCompatActivity() {
     private var managers = JSONArray()
     private var managersLoaded = false
     private var managersLoading = false
+    private var agentWithdrawals = JSONArray()
+    private var agentWithdrawalsLoaded = false
+    private var agentWithdrawalsLoading = false
     private var deviceList = JSONArray()
     private var devicesLoaded = false
     private var devicesLoading = false
@@ -860,6 +863,8 @@ class ManagerActivity : AppCompatActivity() {
             content.addView(Ui.button(this, "Retirer ce téléphone", "danger") { confirmRemoveHost() })
         }
 
+        buildAgentWithdrawalsSection(content)
+
         sectionTitle(content, "Gestionnaires")
         content.addView(Ui.button(this, "Nouveau gestionnaire", "secondary") { showNewManagerSheet() })
         if (!managersLoaded && !managersLoading) loadManagers()
@@ -1479,6 +1484,201 @@ class ManagerActivity : AppCompatActivity() {
         managersLoaded = false
         managersLoading = false
         renderTab()
+    }
+
+    // ---------- retraits agents (admin) ----------
+
+    private fun loadAgentWithdrawals() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (agentWithdrawalsLoading) return
+        agentWithdrawalsLoading = true
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                agentWithdrawals = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/manager/agent-withdrawals", token))
+                }
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    agentWithdrawalsLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+            } catch (e: Exception) {
+            }
+            agentWithdrawalsLoaded = true
+            agentWithdrawalsLoading = false
+            if (currentTab == Tab.ADMIN) renderTab()
+        }
+    }
+
+    private fun reloadAgentWithdrawals() {
+        agentWithdrawalsLoaded = false
+        agentWithdrawalsLoading = false
+        renderTab()
+    }
+
+    private fun buildAgentWithdrawalsSection(content: LinearLayout) {
+        sectionTitle(content, "Retraits agents")
+
+        if (!agentWithdrawalsLoaded && !agentWithdrawalsLoading) loadAgentWithdrawals()
+        if (!agentWithdrawalsLoaded) {
+            val loadingText = t("Chargement…", 13f, Ui.TEXT2)
+            loadingText.setPadding(0, dp(12), 0, 0)
+            content.addView(loadingText)
+            return
+        }
+
+        var active = 0
+        var closed = 0
+        for (i in 0 until agentWithdrawals.length()) {
+            val w = agentWithdrawals.getJSONObject(i)
+            val status = str(w, "status")
+            if (status == "CREATED" || status == "PROCESSING") {
+                active++
+                content.addView(agentWithdrawalCard(w))
+            } else {
+                closed++
+            }
+        }
+
+        if (active == 0) emptyState(content, "Aucun retrait agent à traiter.")
+        if (closed > 0) {
+            val info = t("$closed retrait(s) déjà clôturé(s)", 12f, Ui.TEXT2)
+            info.setPadding(0, dp(10), 0, 0)
+            content.addView(info)
+        }
+    }
+
+    private fun agentWithdrawalStatus(status: String): Pair<String, Int> = when (status) {
+        "CREATED" -> Pair("À traiter", Ui.WARNING)
+        "PROCESSING" -> Pair("En cours", Ui.PRIMARY)
+        "COMPLETED" -> Pair("Payé", Ui.SUCCESS)
+        "FAILED" -> Pair("Échec", Ui.ERROR)
+        "CANCELLED" -> Pair("Annulé", Ui.TEXT2)
+        else -> Pair(status, Ui.TEXT2)
+    }
+
+    private fun agentWithdrawalCard(w: JSONObject): View {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.setPadding(dp(16), dp(14), dp(16), dp(14))
+        card.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(0, dp(10), 0, 0)
+        card.layoutParams = lp
+
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        val amount = t(fcfa(w.optDouble("amount", 0.0)), 18f, Ui.TEXT, true)
+        amount.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        top.addView(amount)
+        val (label, color) = agentWithdrawalStatus(str(w, "status"))
+        top.addView(Ui.pill(this, label, color))
+        card.addView(top)
+
+        card.addView(t(str(w, "reference"), 12f, Ui.TEXT2))
+        card.addView(t("Orange Money : " + str(w, "agentOrangeMoneyPhone"), 12f, Ui.TEXT2))
+        card.addView(t(shortDate(str(w, "createdAt")), 12f, Ui.TEXT2))
+
+        card.setOnClickListener { showAgentWithdrawalSheet(w) }
+        return card
+    }
+
+    private fun showAgentWithdrawalSheet(w: JSONObject) {
+        val id = str(w, "id")
+        val status = str(w, "status")
+        val amount = w.optDouble("amount", 0.0)
+        val (sheet, content) = Ui.bottomSheet(this)
+
+        content.addView(centered("Retrait agent", 20f, Ui.TEXT, true))
+        content.addView(Ui.section(this, "Demande", listOf(
+            "Référence" to str(w, "reference"),
+            "Montant" to fcfa(amount),
+            "Envoyer sur" to str(w, "agentOrangeMoneyPhone"),
+            "Créé le" to longDate(str(w, "createdAt")),
+        )))
+
+        if (status == "CREATED") {
+            content.addView(Ui.button(this, "Prendre en charge") {
+                sheet.dismiss()
+                agentWithdrawalAction("/manager/agent-withdrawals/$id/take-charge", null, "Retrait pris en charge")
+            })
+        } else if (status == "PROCESSING") {
+            content.addView(t(
+                "Envoyez ${fcfa(amount)} sur le numéro ci-dessus, puis confirmez.",
+                13f, Ui.TEXT2,
+            ).also { it.setPadding(0, dp(12), 0, 0) })
+
+            content.addView(Ui.button(this, "Paiement envoyé") {
+                sheet.dismiss()
+                val input = Ui.input(this, "Référence de transaction (facultatif)")
+                val wrap = LinearLayout(this)
+                wrap.setPadding(dp(20), dp(8), dp(20), 0)
+                wrap.addView(input)
+                AlertDialog.Builder(this)
+                    .setTitle("Confirmer le paiement")
+                    .setMessage("Confirmez uniquement si les ${fcfa(amount)} ont réellement été envoyés.")
+                    .setView(wrap)
+                    .setPositiveButton("Oui, envoyé") { _, _ ->
+                        val body = JSONObject()
+                        val ref = input.text.toString().trim()
+                        if (ref.isNotEmpty()) body.put("paymentTransactionId", ref)
+                        agentWithdrawalAction("/manager/agent-withdrawals/$id/complete", body, "Retrait confirmé")
+                    }
+                    .setNegativeButton("Annuler", null)
+                    .show()
+            })
+
+            content.addView(Ui.button(this, "Marquer en échec", "danger") {
+                sheet.dismiss()
+                val input = Ui.input(this, "Motif de l'échec")
+                val wrap = LinearLayout(this)
+                wrap.setPadding(dp(20), dp(8), dp(20), 0)
+                wrap.addView(input)
+                AlertDialog.Builder(this)
+                    .setTitle("Retrait en échec")
+                    .setView(wrap)
+                    .setPositiveButton("Valider") { _, _ ->
+                        val reason = input.text.toString().trim()
+                        if (reason.isEmpty()) {
+                            Toast.makeText(this, "Motif requis", Toast.LENGTH_SHORT).show()
+                        } else {
+                            agentWithdrawalAction(
+                                "/manager/agent-withdrawals/$id/fail",
+                                JSONObject().put("reason", reason),
+                                "Retrait marqué en échec",
+                            )
+                        }
+                    }
+                    .setNegativeButton("Annuler", null)
+                    .show()
+            })
+        }
+
+        sheet.show()
+    }
+
+    private fun agentWithdrawalAction(path: String, body: JSONObject?, successMessage: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                withContext(Dispatchers.IO) { ApiClient.request(base, "POST", path, token, body) }
+                Toast.makeText(this@ManagerActivity, successMessage, Toast.LENGTH_SHORT).show()
+                reloadAgentWithdrawals()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@ManagerActivity, e.message, Toast.LENGTH_LONG).show()
+                    reloadAgentWithdrawals()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun roleLabel(role: String): String = if (role == "ADMIN") "Administrateur" else "Gestionnaire"
