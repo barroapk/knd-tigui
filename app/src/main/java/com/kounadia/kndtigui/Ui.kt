@@ -176,9 +176,9 @@ object Ui {
     }
 
     /**
-     * Clavier numerique fixe (0-9, effacer, coller depuis le presse-papier).
-     * N'affiche jamais le clavier systeme : tous les appuis modifient
-     * directement le texte de editText.
+     * Clavier numerique fixe (0-9, coller, effacer). La hauteur des touches
+     * est calculee d'apres la hauteur de l'ecran (pas de poids en hauteur,
+     * donc rendu previsible) pour que l'ecran tienne sans defilement.
      */
     fun numericKeypad(
         context: Context,
@@ -188,8 +188,16 @@ object Ui {
     ): LinearLayout {
         disableSystemKeyboard(editText)
 
+        val metrics = context.resources.displayMetrics
+        val screenDp = metrics.heightPixels / metrics.density
+        val keyHeightDp = (screenDp * 0.065f).toInt().coerceIn(42, 60)
+
         val root = LinearLayout(context)
         root.orientation = LinearLayout.VERTICAL
+        root.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
 
         fun appendChar(c: String) {
             val start = editText.selectionStart.coerceAtLeast(0)
@@ -227,12 +235,11 @@ object Ui {
             }
         }
 
-        fun keyButton(label: String, weight: Float = 1f, style: String = "secondary", action: () -> Unit): View {
-            val btn = text(context, label, 20f, if (style == "primary") PRIMARY else TEXT, true)
+        fun keyButton(label: String, color: Int = TEXT, size: Float = 22f, action: () -> Unit): View {
+            val btn = text(context, label, size, color, true)
             btn.gravity = Gravity.CENTER
             btn.background = rounded(context, ELEVATED, 14, BORDER)
-            btn.setPadding(0, dp(context, 18), 0, dp(context, 18))
-            val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight)
+            val lp = LinearLayout.LayoutParams(0, dp(context, keyHeightDp), 1f)
             lp.setMargins(dp(context, 4), dp(context, 4), dp(context, 4), dp(context, 4))
             btn.layoutParams = lp
             pressable(btn, action)
@@ -242,6 +249,10 @@ object Ui {
         fun row(vararg views: View): LinearLayout {
             val r = LinearLayout(context)
             r.orientation = LinearLayout.HORIZONTAL
+            r.layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
             for (v in views) r.addView(v)
             return r
         }
@@ -261,25 +272,15 @@ object Ui {
             keyButton("8") { appendChar("8") },
             keyButton("9") { appendChar("9") },
         ))
-
-        val lastRow = if (allowDecimal) {
-            row(
-                keyButton(".") { appendChar(".") },
-                keyButton("0") { appendChar("0") },
-                keyButton("⌫") { backspace() },
-            )
-        } else {
-            row(
-                keyButton("Coller") { pasteFromClipboard() },
-                keyButton("0") { appendChar("0") },
-                keyButton("⌫") { backspace() },
-            )
-        }
-        root.addView(lastRow)
-
-        if (allowDecimal) {
-            root.addView(row(keyButton("Coller", style = "secondary") { pasteFromClipboard() }))
-        }
+        root.addView(row(
+            if (allowDecimal) {
+                keyButton(".", PRIMARY) { appendChar(".") }
+            } else {
+                keyButton("Coller", PRIMARY, 14f) { pasteFromClipboard() }
+            },
+            keyButton("0") { appendChar("0") },
+            keyButton("⌫", ERROR) { backspace() },
+        ))
 
         return root
     }

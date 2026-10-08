@@ -452,7 +452,6 @@ class AgentDepositActivity : AppCompatActivity() {
         }
         col.addView(resetButton)
         col.addView(spacer(16))
-        col.addView(Ui.numericKeypad(this, amountInput, allowDecimal = false) { syncFromInput() })
         col.addView(spacer(12))
 
         val messageText = t("", 13f, Ui.ERROR)
@@ -461,6 +460,8 @@ class AgentDepositActivity : AppCompatActivity() {
 
         val confirmButton = Ui.button(this, "Confirmer le dépôt") { }
         col.addView(confirmButton)
+        col.addView(spacer(10))
+        col.addView(Ui.numericKeypad(this, amountInput, allowDecimal = false) { syncFromInput() })
 
         confirmButton.setOnClickListener {
             if (amountCents <= 0) {
