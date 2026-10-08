@@ -409,7 +409,15 @@ class AgentDepositActivity : AppCompatActivity() {
         amountInput.textSize = 28f
         amountInput.gravity = Gravity.CENTER
         amountInput.inputType = InputType.TYPE_CLASS_NUMBER
-        col.addView(amountInput)
+        val amountRow = LinearLayout(this)
+        amountRow.orientation = LinearLayout.HORIZONTAL
+        amountRow.gravity = Gravity.CENTER_VERTICAL
+        amountInput.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        amountRow.addView(amountInput)
+        val fcfaLabel = t("FCFA", 16f, Ui.TEXT2, true)
+        fcfaLabel.setPadding(dp(12), 0, dp(4), 0)
+        amountRow.addView(fcfaLabel)
+        col.addView(amountRow)
 
         fun syncFromInput() {
             amountCents = amountInput.text.toString().toLongOrNull() ?: 0L
@@ -441,16 +449,12 @@ class AgentDepositActivity : AppCompatActivity() {
             val btnLp = LinearLayout.LayoutParams(0, WRAP, 1f)
             btnLp.setMargins(dp(3), 0, dp(3), 0)
             btn.layoutParams = btnLp
-            Ui.pressable(btn) { setAmount(amountCents + amt) }
+            btn.setOnClickListener { setAmount(amountCents + amt) }
             quickRow.addView(btn)
         }
         col.addView(quickRow)
         col.addView(spacer(12))
 
-        val resetButton = Ui.button(this, "Réinitialiser le montant", "secondary") {
-            setAmount(0)
-        }
-        col.addView(resetButton)
         col.addView(spacer(16))
         col.addView(spacer(12))
 

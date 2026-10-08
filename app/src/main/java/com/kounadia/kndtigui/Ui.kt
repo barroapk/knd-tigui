@@ -242,7 +242,15 @@ object Ui {
             val lp = LinearLayout.LayoutParams(0, dp(context, keyHeightDp), 1f)
             lp.setMargins(dp(context, 4), dp(context, 4), dp(context, 4), dp(context, 4))
             btn.layoutParams = lp
-            pressable(btn, action)
+            btn.setOnClickListener { action() }
+            btn.setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(40).start()
+                    android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(60).start()
+                }
+                false
+            }
             return btn
         }
 
