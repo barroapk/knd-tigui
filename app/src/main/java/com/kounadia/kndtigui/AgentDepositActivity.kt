@@ -195,6 +195,76 @@ class AgentDepositActivity : AppCompatActivity() {
     }
 
     private fun showFavoritesSheet(idInput: EditText) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        content.addView(t("Mes joueurs", 18f, Ui.TEXT, true))
+        content.addView(spacer(12))
+
+        val listBox = LinearLayout(this)
+        listBox.orientation = LinearLayout.VERTICAL
+        content.addView(listBox)
+
+        content.addView(spacer(8))
+        content.addView(Ui.button(this, "Ajouter un joueur", "secondary") {
+            sheet.dismiss()
+            showAddFavoriteSheet(idInput)
+        })
+
+        fun renderList() {
+            listBox.removeAllViews()
+            val favorites = FavoritesCache.load(this)
+
+            if (favorites.length() == 0) {
+                listBox.addView(t("Aucun joueur favori pour l'instant.", 13f, Ui.TEXT2))
+                return
+            }
+
+            for (i in 0 until favorites.length()) {
+                val fav = favorites.getJSONObject(i)
+                val favId = fav.getString("playerId")
+                val favName = fav.optString("playerName", "")
+                val favRowId = fav.getString("id")
+
+                val row = LinearLayout(this)
+                row.orientation = LinearLayout.HORIZONTAL
+                row.gravity = Gravity.CENTER_VERTICAL
+                row.setPadding(0, dp(8), 0, dp(8))
+
+                val label = t("$favId · $favName", 14f, Ui.TEXT)
+                label.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+                label.setOnClickListener {
+                    idInput.setText(favId)
+                    sheet.dismiss()
+                }
+                row.addView(label)
+
+                val removeIcon = t("✕", 16f, Ui.ERROR)
+                removeIcon.setPadding(dp(12), 0, dp(4), 0)
+                removeIcon.setOnClickListener {
+                    // Suppression locale immediate, serveur synchronise ensuite.
+                    FavoritesCache.remove(this, favRowId)
+                    renderList()
+                    scope.launch {
+                        try {
+                            val base = ConfigStorage.getApiBaseUrl(this@AgentDepositActivity)
+                            val token = SessionStorage.getToken(this@AgentDepositActivity) ?: return@launch
+                            withContext(Dispatchers.IO) {
+                                ApiClient.request(base, "DELETE", "/agents/favorites/$favRowId", token, null)
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                row.addView(removeIcon)
+
+                listBox.addView(row)
+            }
+        }
+
+        // Affichage instantane depuis le cache local.
+        renderList()
+        sheet.show()
+
+        // Synchronisation serveur en arriere-plan.
         scope.launch {
             try {
                 val base = ConfigStorage.getApiBaseUrl(this@AgentDepositActivity)
@@ -202,58 +272,100 @@ class AgentDepositActivity : AppCompatActivity() {
                 val response = withContext(Dispatchers.IO) {
                     JSONArray(ApiClient.request(base, "GET", "/agents/favorites", token, null))
                 }
-
-                val (sheet, content) = Ui.bottomSheet(this@AgentDepositActivity)
-                content.addView(t("Mes joueurs", 18f, Ui.TEXT, true))
-                content.addView(spacer(12))
-
-                if (response.length() == 0) {
-                    content.addView(t("Aucun joueur favori pour l'instant.", 13f, Ui.TEXT2))
-                }
-
-                for (i in 0 until response.length()) {
-                    val fav = response.getJSONObject(i)
-                    val favId = fav.getString("playerId")
-                    val favName = fav.optString("playerName", "")
-                    val favFavId = fav.getString("id")
-
-                    val row = LinearLayout(this@AgentDepositActivity)
-                    row.orientation = LinearLayout.HORIZONTAL
-                    row.gravity = Gravity.CENTER_VERTICAL
-                    row.setPadding(0, dp(8), 0, dp(8))
-
-                    val label = t("$favId · $favName", 14f, Ui.TEXT)
-                    val labelLp = LinearLayout.LayoutParams(0, WRAP, 1f)
-                    label.layoutParams = labelLp
-                    label.setOnClickListener {
-                        idInput.setText(favId)
-                        sheet.dismiss()
-                    }
-                    row.addView(label)
-
-                    val removeIcon = t("✕", 16f, Ui.ERROR)
-                    removeIcon.setPadding(dp(12), 0, dp(4), 0)
-                    removeIcon.setOnClickListener {
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    ApiClient.request(base, "DELETE", "/agents/favorites/$favFavId", token, null)
-                                }
-                            } catch (_: Exception) {
-                            }
-                            sheet.dismiss()
-                        }
-                    }
-                    row.addView(removeIcon)
-
-                    content.addView(row)
-                }
-
-                sheet.show()
+                FavoritesCache.save(this@AgentDepositActivity, response)
+                if (sheet.isShowing) renderList()
             } catch (_: Exception) {
-                Toast.makeText(this@AgentDepositActivity, "Impossible de charger les favoris", Toast.LENGTH_SHORT).show()
+                // Hors ligne ou serveur endormi : le cache local reste affiche.
             }
         }
+    }
+
+    private fun showAddFavoriteSheet(originIdInput: EditText) {
+        val (sheet, content) = Ui.bottomSheet(this)
+        content.addView(t("Ajouter un joueur favori", 18f, Ui.TEXT, true))
+        content.addView(spacer(12))
+        content.addView(t("ID 1xBet du joueur", 13f, Ui.TEXT2))
+        content.addView(spacer(6))
+
+        val newIdInput = field("ID joueur", true)
+        content.addView(newIdInput)
+
+        val messageText = t("", 12f, Ui.ERROR)
+        messageText.setPadding(0, dp(8), 0, 0)
+        content.addView(messageText)
+        content.addView(spacer(12))
+
+        val confirmButton = Ui.button(this, "Vérifier et ajouter") { }
+        content.addView(confirmButton)
+
+        confirmButton.setOnClickListener {
+            val playerId = newIdInput.text.toString().trim()
+            if (playerId.isBlank()) {
+                messageText.setTextColor(Ui.ERROR)
+                messageText.text = "Saisissez un ID 1xBet"
+                return@setOnClickListener
+            }
+
+            confirmButton.isEnabled = false
+            confirmButton.alpha = 0.5f
+            messageText.setTextColor(Ui.TEXT2)
+            messageText.text = "Vérification…"
+
+            scope.launch {
+                try {
+                    val base = ConfigStorage.getApiBaseUrl(this@AgentDepositActivity)
+                    val token = SessionStorage.getToken(this@AgentDepositActivity) ?: return@launch
+
+                    val verifyResponse = withContext(Dispatchers.IO) {
+                        JSONObject(
+                            ApiClient.request(
+                                base,
+                                "GET",
+                                "/player-verification/verify?playerId=$playerId",
+                                null,
+                                null
+                            )
+                        )
+                    }
+
+                    val valid = verifyResponse.optBoolean("valid", false)
+                    val playerName = verifyResponse.optString("playerName", "")
+
+                    if (!valid || playerName.isBlank()) {
+                        confirmButton.isEnabled = true
+                        confirmButton.alpha = 1f
+                        messageText.setTextColor(Ui.ERROR)
+                        messageText.text = "Compte 1xBet introuvable ou non vérifié"
+                        return@launch
+                    }
+
+                    val body = JSONObject()
+                        .put("playerId", playerId)
+                        .put("playerName", playerName)
+
+                    val created = withContext(Dispatchers.IO) {
+                        JSONObject(ApiClient.request(base, "POST", "/agents/favorites", token, body))
+                    }
+                    FavoritesCache.add(this@AgentDepositActivity, created)
+
+                    originIdInput.setText(playerId)
+                    sheet.dismiss()
+                    Toast.makeText(this@AgentDepositActivity, "$playerName ajouté aux favoris", Toast.LENGTH_SHORT).show()
+                } catch (e: ApiException) {
+                    confirmButton.isEnabled = true
+                    confirmButton.alpha = 1f
+                    messageText.setTextColor(Ui.ERROR)
+                    messageText.text = e.message
+                } catch (e: Exception) {
+                    confirmButton.isEnabled = true
+                    confirmButton.alpha = 1f
+                    messageText.setTextColor(Ui.ERROR)
+                    messageText.text = "Connexion impossible. Réessayez."
+                }
+            }
+        }
+
+        sheet.show()
     }
 
     // ---------- Etape 2 : montant cumulatif + USSD ----------
