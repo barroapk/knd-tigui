@@ -53,6 +53,14 @@ class AdminActivity : AppCompatActivity() {
     private var commissionData: JSONObject? = null
     private var commissionLoadedMonth = ""
     private var commissionLoading = false
+    private var homeLoading = false
+    private var homeLoadedAt = 0L
+    private var homeWdTodo = 0
+    private var homeActiveAgents = 0
+    private var homeMonthDeposits = 0.0
+    private var homeMonthWithdrawals = 0.0
+    private var homeCommAgents = 0
+    private var homeCommTotal = 0.0
     private var agentsOverview = JSONArray()
     private var agentsLoaded = false
     private var agentsLoading = false
@@ -550,11 +558,159 @@ class AdminActivity : AppCompatActivity() {
         }
     }
 
+    private fun loadHomeExtras() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (homeLoading) return
+        homeLoading = true
+        scope.launch {
+            val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+            try {
+                val list = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/manager/agent-withdrawals", token))
+                }
+                var n = 0
+                for (i in 0 until list.length()) {
+                    if (list.getJSONObject(i).optString("status") == "CREATED") n++
+                }
+                homeWdTodo = n
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    homeLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+            } catch (e: Exception) {
+            }
+
+            try {
+                val list = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/admin/agent-commissions/agents-overview", token))
+                }
+                var active = 0
+                var dep = 0.0
+                var wd = 0.0
+                for (i in 0 until list.length()) {
+                    val a = list.getJSONObject(i)
+                    if (a.optString("status") == "ACTIVE") active++
+                    dep += a.optDouble("monthDepositVolume", 0.0)
+                    wd += a.optDouble("monthWithdrawalVolume", 0.0)
+                }
+                homeActiveAgents = active
+                homeMonthDeposits = dep
+                homeMonthWithdrawals = wd
+            } catch (e: Exception) {
+            }
+
+            try {
+                val prev = shiftMonth(currentMonthString(), -1)
+                val month = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "GET", "/admin/agent-commissions/month/$prev", token))
+                }
+                val items = month.optJSONArray("items") ?: JSONArray()
+                var count = 0
+                for (i in 0 until items.length()) {
+                    if (items.getJSONObject(i).optString("status") == "CALCULATED") count++
+                }
+                homeCommAgents = count
+                homeCommTotal = month.optDouble("totalToPay", 0.0)
+            } catch (e: Exception) {
+            }
+
+            homeLoadedAt = System.currentTimeMillis()
+            homeLoading = false
+            if (currentTab == Tab.HOME) renderTab()
+        }
+    }
+
+    private fun alertCard(count: Int, label: String, color: Int, onTap: () -> Unit): View {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.HORIZONTAL
+        card.gravity = Gravity.CENTER_VERTICAL
+        card.setPadding(dp(14), dp(12), dp(14), dp(12))
+        card.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(0, dp(8), 0, 0)
+        card.layoutParams = lp
+
+        val badge = t(count.toString(), 15f, 0xFFFFFFFF.toInt(), true)
+        badge.gravity = Gravity.CENTER
+        badge.background = Ui.circle(color)
+        val blp = LinearLayout.LayoutParams(dp(34), dp(34))
+        blp.setMargins(0, 0, dp(12), 0)
+        card.addView(badge, blp)
+
+        val text = t(label, 14f, Ui.TEXT, true)
+        text.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        card.addView(text)
+        card.addView(t("›", 20f, Ui.TEXT2))
+
+        card.setOnClickListener { onTap() }
+        return card
+    }
+
+    private fun buildHomeAlerts(content: LinearLayout) {
+        if (System.currentTimeMillis() - homeLoadedAt > 60000L && !homeLoading) loadHomeExtras()
+
+        val toDeposit = countToProcess()
+        val prevMonth = shiftMonth(currentMonthString(), -1)
+        var shown = 0
+
+        sectionTitle(content, "Alertes")
+
+        if (homeWdTodo > 0) {
+            shown++
+            content.addView(alertCard(homeWdTodo, "retrait(s) agent à traiter", Ui.WARNING) {
+                financeMain = "withdrawals"
+                financeSub = "todo"
+                setTab(Tab.FINANCE)
+            })
+        }
+        if (toDeposit > 0) {
+            shown++
+            content.addView(alertCard(toDeposit, "dépôt(s) payé(s) à créditer", Ui.PRIMARY) { openOps("queue") })
+        }
+        if (unmatched.length() > 0) {
+            shown++
+            content.addView(alertCard(unmatched.length(), "paiement(s) SMS à vérifier", Ui.ERROR) { openOps("verify") })
+        }
+        if (homeCommAgents > 0) {
+            shown++
+            content.addView(alertCard(homeCommAgents, "commission(s) à payer · " + fcfa(homeCommTotal), Ui.WARNING) {
+                financeMain = "commissions"
+                commissionMonth = prevMonth
+                commissionData = null
+                commissionLoadedMonth = ""
+                setTab(Tab.FINANCE)
+            })
+        }
+
+        if (shown == 0) {
+            val msg = if (homeLoadedAt == 0L) "Chargement…" else "Tout est à jour ✓"
+            val v = t(msg, 13f, Ui.TEXT2)
+            v.setPadding(0, dp(8), 0, 0)
+            content.addView(v)
+        }
+    }
+
+    private fun buildHomeMonth(content: LinearLayout) {
+        sectionTitle(content, "Ce mois-ci · agents")
+        statRow(
+            content,
+            statCard("DÉPÔTS AGENTS", fcfa(homeMonthDeposits), "réussis ce mois", Ui.SUCCESS),
+            statCard("RETRAITS AGENTS", fcfa(homeMonthWithdrawals), "payés ce mois", Ui.TEXT),
+        )
+        val agents = t("$homeActiveAgents agent(s) actif(s)", 12f, Ui.TEXT2)
+        agents.setPadding(0, dp(8), 0, 0)
+        content.addView(agents)
+    }
+
     private fun buildHome(content: LinearLayout) {
         val name = SessionStorage.getDisplayName(this) ?: ""
         val role = if (SessionStorage.getRole(this) == "ADMIN") "Administrateur" else "Gestionnaire"
         header(content, "Bonjour, ${name.substringBefore(' ')}", role)
+        buildHomeAlerts(content)
         summaryCards(content)
+        buildHomeMonth(content)
 
         if (deposits.length() > 0) {
             sectionTitle(content, "À traiter maintenant")
