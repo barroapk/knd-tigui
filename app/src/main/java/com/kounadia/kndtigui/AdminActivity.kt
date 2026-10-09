@@ -48,6 +48,11 @@ class AdminActivity : AppCompatActivity() {
 
     private var opsSub = "queue"
     private var financeSub = "todo"
+    private var financeMain = "commissions"
+    private var commissionMonth = ""
+    private var commissionData: JSONObject? = null
+    private var commissionLoadedMonth = ""
+    private var commissionLoading = false
     private var agentsOverview = JSONArray()
     private var agentsLoaded = false
     private var agentsLoading = false
@@ -1092,9 +1097,278 @@ class AdminActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildFinanceTab(content: LinearLayout) {
-        header(content, "Finances", "Retraits des agents")
+    // ---------- commissions (admin) ----------
 
+    private fun currentMonthString(): String {
+        val c = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        return String.format(java.util.Locale.US, "%04d-%02d", c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1)
+    }
+
+    private fun shiftMonth(month: String, delta: Int): String {
+        val y = month.substring(0, 4).toInt()
+        val m = month.substring(5, 7).toInt()
+        val c = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+        c.clear()
+        c.set(y, m - 1, 1)
+        c.add(java.util.Calendar.MONTH, delta)
+        return String.format(java.util.Locale.US, "%04d-%02d", c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1)
+    }
+
+    private fun loadCommissionMonth() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (commissionLoading) return
+        commissionLoading = true
+        val requested = commissionMonth
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                val response = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "GET", "/admin/agent-commissions/month/$requested", token))
+                }
+                if (requested == commissionMonth) {
+                    commissionData = response
+                    commissionLoadedMonth = requested
+                }
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    commissionLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+                commissionLoadedMonth = requested
+                commissionData = null
+            } catch (e: Exception) {
+                commissionLoadedMonth = requested
+                commissionData = null
+            }
+            commissionLoading = false
+            if (currentTab == Tab.FINANCE) renderTab()
+        }
+    }
+
+    private fun reloadCommissions() {
+        commissionLoadedMonth = ""
+        commissionLoading = false
+        renderTab()
+    }
+
+    private fun buildCommissionsPart(content: LinearLayout) {
+        if (commissionMonth.isEmpty()) commissionMonth = shiftMonth(currentMonthString(), -1)
+
+        val nav = LinearLayout(this)
+        nav.orientation = LinearLayout.HORIZONTAL
+        nav.gravity = Gravity.CENTER_VERTICAL
+        nav.addView(chip("‹", false) {
+            commissionMonth = shiftMonth(commissionMonth, -1)
+            commissionData = null
+            commissionLoadedMonth = ""
+            renderTab()
+        })
+        val monthText = t(monthLabel(commissionMonth), 16f, Ui.TEXT, true)
+        monthText.gravity = Gravity.CENTER
+        monthText.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        nav.addView(monthText)
+        nav.addView(chip("›", false) {
+            val next = shiftMonth(commissionMonth, 1)
+            if (next <= currentMonthString()) {
+                commissionMonth = next
+                commissionData = null
+                commissionLoadedMonth = ""
+                renderTab()
+            }
+        })
+        content.addView(nav)
+
+        if (commissionLoadedMonth != commissionMonth && !commissionLoading) loadCommissionMonth()
+        if (commissionLoadedMonth != commissionMonth) {
+            val loadingText = t("Chargement…", 13f, Ui.TEXT2)
+            loadingText.setPadding(0, dp(12), 0, 0)
+            content.addView(loadingText)
+            return
+        }
+
+        val data = commissionData
+        if (data == null) {
+            emptyState(content, "Impossible de charger ce mois. Réessayez.")
+            return
+        }
+
+        val closed = data.optBoolean("closed", false)
+        val items = data.optJSONArray("items") ?: JSONArray()
+
+        val summary = LinearLayout(this)
+        summary.orientation = LinearLayout.VERTICAL
+        summary.setPadding(dp(16), dp(14), dp(16), dp(14))
+        summary.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
+        val slp = LinearLayout.LayoutParams(MATCH, WRAP)
+        slp.setMargins(0, dp(10), 0, 0)
+        summary.layoutParams = slp
+        summary.addView(t("TOTAL À PAYER", 11f, Ui.TEXT2, true))
+        summary.addView(t(fcfa(data.optDouble("totalToPay", 0.0)), 24f, Ui.TEXT, true))
+        summary.addView(t(
+            if (closed) "${items.length()} agent(s) · calcul automatique le 1er du mois"
+            else "Mois en cours : le calcul sera possible à partir du 1er du mois suivant.",
+            12f, Ui.TEXT2,
+        ))
+        content.addView(summary)
+
+        if (closed) {
+            content.addView(Ui.button(this, "Recalculer ce mois", "secondary") { recalculateMonth() })
+        }
+
+        if (items.length() == 0) {
+            emptyState(content, if (closed) "Aucune commission pour ce mois." else "Rien à payer pour le moment.")
+            return
+        }
+
+        for (i in 0 until items.length()) {
+            content.addView(commissionCard(items.getJSONObject(i)))
+        }
+    }
+
+    private fun commissionCard(it: JSONObject): View {
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.setPadding(dp(16), dp(14), dp(16), dp(14))
+        card.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(0, dp(10), 0, 0)
+        card.layoutParams = lp
+
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        val name = t(str(it, "companyName"), 16f, Ui.TEXT, true)
+        name.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        top.addView(name)
+        val paid = str(it, "status") == "PAID"
+        top.addView(Ui.pill(this, if (paid) "Payé" else "À payer", if (paid) Ui.SUCCESS else Ui.WARNING))
+        card.addView(top)
+
+        card.addView(t(str(it, "agentCode"), 12f, Ui.TEXT2))
+        val line = t(
+            "Dépôts " + fcfa(it.optDouble("depositVolume", 0.0)) +
+                " · retraits " + fcfa(it.optDouble("withdrawalVolume", 0.0)),
+            12f, Ui.TEXT2,
+        )
+        line.setPadding(0, dp(6), 0, 0)
+        card.addView(line)
+        card.addView(t("Commission : " + fcfa(it.optDouble("totalCommission", 0.0)), 14f, Ui.TEXT, true))
+        if (paid) {
+            card.addView(t("Payé le " + shortDate(str(it, "paidAt")).substringBefore(' '), 12f, Ui.TEXT2))
+        }
+
+        card.setOnClickListener { showCommissionSheet(it) }
+        return card
+    }
+
+    private fun showCommissionSheet(it: JSONObject) {
+        val periodId = str(it, "periodId")
+        val paid = str(it, "status") == "PAID"
+        val total = it.optDouble("totalCommission", 0.0)
+        val (sheet, content) = Ui.bottomSheet(this)
+
+        content.addView(centered(str(it, "companyName"), 20f, Ui.TEXT, true))
+        content.addView(Ui.section(this, monthLabel(commissionMonth), listOf(
+            "Dépôts" to fcfa(it.optDouble("depositVolume", 0.0)),
+            "Commission dépôts" to fcfa(it.optDouble("depositCommission", 0.0)),
+            "Retraits" to fcfa(it.optDouble("withdrawalVolume", 0.0)),
+            "Commission retraits" to fcfa(it.optDouble("withdrawalCommission", 0.0)),
+            "Total à payer" to fcfa(total),
+        )))
+        content.addView(Ui.section(this, "Envoyer sur", listOf(
+            "Orange Money" to str(it, "orangeMoneyPhone"),
+            "Code agent" to str(it, "agentCode"),
+        ), copyable = setOf("Orange Money"), onCopy = { label, value -> copy(label, value) }))
+
+        if (paid) {
+            content.addView(t("Payé le " + longDate(str(it, "paidAt")), 13f, Ui.SUCCESS).also { v -> v.setPadding(0, dp(12), 0, 0) })
+        } else if (total > 0 && periodId.isNotEmpty()) {
+            content.addView(Ui.button(this, "Marquer payé") {
+                sheet.dismiss()
+                val input = Ui.input(this, "Référence de transaction (facultatif)")
+                val wrap = LinearLayout(this)
+                wrap.setPadding(dp(20), dp(8), dp(20), 0)
+                wrap.addView(input)
+                AlertDialog.Builder(this)
+                    .setTitle("Confirmer le paiement")
+                    .setMessage("Confirmez uniquement si ${fcfa(total)} ont réellement été envoyés sur le " + str(it, "orangeMoneyPhone") + ".")
+                    .setView(wrap)
+                    .setPositiveButton("Oui, payé") { _, _ ->
+                        val body = JSONObject().put("paymentMethod", "orange_money")
+                        val ref = input.text.toString().trim()
+                        if (ref.isNotEmpty()) body.put("paymentReference", ref)
+                        payCommission(periodId, body)
+                    }
+                    .setNegativeButton("Annuler", null)
+                    .show()
+            })
+        }
+
+        content.addView(Ui.button(this, "Fermer", "secondary") { sheet.dismiss() })
+        sheet.show()
+    }
+
+    private fun payCommission(periodId: String, body: JSONObject) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "POST", "/admin/agent-commissions/$periodId/pay", token, body)
+                }
+                Toast.makeText(this@AdminActivity, "Paiement enregistré", Toast.LENGTH_SHORT).show()
+                reloadCommissions()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@AdminActivity, e.message, Toast.LENGTH_LONG).show()
+                    reloadCommissions()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@AdminActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun recalculateMonth() {
+        val token = SessionStorage.getToken(this) ?: return
+        val month = commissionMonth
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "POST", "/admin/agent-commissions/calculate-month", token, JSONObject().put("month", month))
+                }
+                Toast.makeText(this@AdminActivity, "Mois recalculé", Toast.LENGTH_SHORT).show()
+                reloadCommissions()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@AdminActivity, e.message, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@AdminActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun buildFinanceTab(content: LinearLayout) {
+        header(content, "Finances", "Commissions et retraits des agents")
+
+        val main = LinearLayout(this)
+        main.orientation = LinearLayout.HORIZONTAL
+        main.addView(chip("Commissions", financeMain == "commissions") { financeMain = "commissions"; renderTab() })
+        main.addView(chip("Retraits", financeMain == "withdrawals") { financeMain = "withdrawals"; renderTab() })
+        content.addView(main)
+        content.addView(spacer(8))
+
+        if (financeMain == "commissions") buildCommissionsPart(content) else buildWithdrawalsPart(content)
+    }
+
+    private fun buildWithdrawalsPart(content: LinearLayout) {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.addView(chip("À traiter", financeSub == "todo") { financeSub = "todo"; renderTab() })
