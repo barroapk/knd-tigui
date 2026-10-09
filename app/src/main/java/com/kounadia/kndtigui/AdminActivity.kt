@@ -54,6 +54,9 @@ class AdminActivity : AppCompatActivity() {
     private var commissionLoadedMonth = ""
     private var commissionLoading = false
     private var homeLoading = false
+    private var announcements = JSONArray()
+    private var announcementsLoaded = false
+    private var announcementsLoading = false
     private var homeLoadedAt = 0L
     private var homeWdTodo = 0
     private var homeActiveAgents = 0
@@ -1620,6 +1623,227 @@ class AdminActivity : AppCompatActivity() {
         if (shown == 0) emptyState(content, "Aucun retrait dans cette catégorie.")
     }
 
+    // ---------- annonces aux agents (admin) ----------
+
+    private fun loadAnnouncements() {
+        val token = SessionStorage.getToken(this) ?: return
+        if (announcementsLoading) return
+        announcementsLoading = true
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                announcements = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/manager/notifications", token))
+                }
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    announcementsLoading = false
+                    handleApiError(e, false)
+                    return@launch
+                }
+            } catch (e: Exception) {
+            }
+            announcementsLoaded = true
+            announcementsLoading = false
+            if (currentTab == Tab.MORE) renderTab()
+        }
+    }
+
+    private fun reloadAnnouncements() {
+        announcementsLoaded = false
+        announcementsLoading = false
+        renderTab()
+    }
+
+    private fun buildAnnouncementsSection(content: LinearLayout) {
+        sectionTitle(content, "Annonces aux agents")
+        content.addView(Ui.button(this, "Nouvelle annonce", "secondary") { showNewAnnouncementSheet() })
+
+        if (!announcementsLoaded && !announcementsLoading) loadAnnouncements()
+        if (!announcementsLoaded) {
+            val v = t("Chargement…", 13f, Ui.TEXT2)
+            v.setPadding(0, dp(12), 0, 0)
+            content.addView(v)
+            return
+        }
+        if (announcements.length() == 0) {
+            emptyState(content, "Aucune annonce envoyée.")
+            return
+        }
+        for (i in 0 until minOf(announcements.length(), 10)) {
+            content.addView(announcementCard(announcements.getJSONObject(i)))
+        }
+    }
+
+    private fun announcementCard(n: JSONObject): View {
+        val enabled = n.optBoolean("enabled", true)
+        val card = LinearLayout(this)
+        card.orientation = LinearLayout.VERTICAL
+        card.setPadding(dp(16), dp(14), dp(16), dp(14))
+        card.background = Ui.rounded(this, Ui.SURFACE, 16, Ui.BORDER)
+        val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+        lp.setMargins(0, dp(10), 0, 0)
+        card.layoutParams = lp
+
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        val title = t(str(n, "title"), 15f, Ui.TEXT, true)
+        title.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        top.addView(title)
+        top.addView(Ui.pill(this, if (enabled) "Active" else "Désactivée", if (enabled) Ui.SUCCESS else Ui.TEXT2))
+        card.addView(top)
+
+        card.addView(t(str(n, "message"), 13f, Ui.TEXT2).also { it.setPadding(0, dp(6), 0, 0) })
+        val target = if (str(n, "targetType") == "ALL_AGENTS") "Tous les agents" else "Un agent"
+        card.addView(t(target + " · " + shortDate(str(n, "createdAt")), 12f, Ui.TEXT2).also { it.setPadding(0, dp(6), 0, 0) })
+
+        if (enabled) {
+            card.setOnClickListener {
+                AlertDialog.Builder(this)
+                    .setTitle("Désactiver cette annonce ?")
+                    .setMessage("Les agents ne la verront plus.")
+                    .setPositiveButton("Désactiver") { _, _ -> disableAnnouncement(str(n, "id")) }
+                    .setNegativeButton("Annuler", null)
+                    .show()
+            }
+        }
+        return card
+    }
+
+    private fun disableAnnouncement(id: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "POST", "/manager/notifications/$id/disable", token, JSONObject())
+                }
+                Toast.makeText(this@AdminActivity, "Annonce désactivée", Toast.LENGTH_SHORT).show()
+                reloadAnnouncements()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) handleApiError(e, false)
+                else Toast.makeText(this@AdminActivity, e.message, Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(this@AdminActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun showNewAnnouncementSheet() {
+        val (sheet, content) = Ui.bottomSheet(this)
+        sheet.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        content.addView(centered("Nouvelle annonce", 20f, Ui.TEXT, true))
+        content.addView(spacer(12))
+
+        val titleInput = Ui.input(this, "Titre")
+        val messageInput = Ui.input(this, "Message")
+        messageInput.isSingleLine = false
+        messageInput.minLines = 3
+        messageInput.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+            android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+            android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        content.addView(titleInput)
+        content.addView(messageInput)
+
+        var target = "ALL_AGENTS"
+        var agentId = ""
+        var expiryDays = 0
+
+        val pick = Ui.button(this, "Choisir l'agent", "secondary") { }
+        pick.visibility = View.GONE
+
+        val targetRow = LinearLayout(this)
+        targetRow.orientation = LinearLayout.HORIZONTAL
+        fun drawTarget() {
+            targetRow.removeAllViews()
+            targetRow.addView(chip("Tous les agents", target == "ALL_AGENTS") { target = "ALL_AGENTS"; pick.visibility = View.GONE; drawTarget() })
+            targetRow.addView(chip("Un agent", target == "AGENT") { target = "AGENT"; pick.visibility = View.VISIBLE; drawTarget() })
+        }
+        drawTarget()
+        content.addView(targetRow)
+        content.addView(pick)
+
+        pick.setOnClickListener {
+            val token = SessionStorage.getToken(this) ?: return@setOnClickListener
+            scope.launch {
+                try {
+                    val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                    val list = withContext(Dispatchers.IO) {
+                        JSONArray(ApiClient.request(base, "GET", "/admin/agent-commissions/agents-overview", token))
+                    }
+                    val labels = Array(list.length()) { i ->
+                        val a = list.getJSONObject(i)
+                        str(a, "companyName") + " · " + str(a, "agentCode")
+                    }
+                    AlertDialog.Builder(this@AdminActivity)
+                        .setTitle("Choisir l'agent")
+                        .setItems(labels) { _, which ->
+                            agentId = str(list.getJSONObject(which), "id")
+                            pick.text = labels[which]
+                        }
+                        .show()
+                } catch (e: Exception) {
+                    Toast.makeText(this@AdminActivity, "Impossible de charger les agents", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        val expiryRow = LinearLayout(this)
+        expiryRow.orientation = LinearLayout.HORIZONTAL
+        fun drawExpiry() {
+            expiryRow.removeAllViews()
+            for ((label, days) in listOf("Sans fin" to 0, "1 jour" to 1, "7 jours" to 7, "30 jours" to 30)) {
+                expiryRow.addView(chip(label, expiryDays == days) { expiryDays = days; drawExpiry() })
+            }
+        }
+        drawExpiry()
+        content.addView(t("Durée d'affichage", 12f, Ui.TEXT2).also { it.setPadding(0, dp(10), 0, 0) })
+        content.addView(expiryRow)
+
+        var sending = false
+        content.addView(Ui.button(this, "Envoyer") {
+            val title = titleInput.text.toString().trim()
+            val message = messageInput.text.toString().trim()
+            if (title.isEmpty() || message.isEmpty()) {
+                Toast.makeText(this, "Titre et message requis", Toast.LENGTH_SHORT).show()
+            } else if (target == "AGENT" && agentId.isEmpty()) {
+                Toast.makeText(this, "Choisissez l'agent", Toast.LENGTH_SHORT).show()
+            } else if (!sending) {
+                sending = true
+                val body = JSONObject().put("title", title).put("message", message).put("targetType", target)
+                if (target == "AGENT") body.put("agentId", agentId)
+                if (expiryDays > 0) {
+                    val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+                    fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                    body.put("expiresAt", fmt.format(java.util.Date(System.currentTimeMillis() + expiryDays * 86400000L)))
+                }
+                sendAnnouncement(sheet, body) { sending = false }
+            }
+        })
+        sheet.show()
+    }
+
+    private fun sendAnnouncement(sheet: android.app.Dialog, body: JSONObject, onDone: () -> Unit) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                withContext(Dispatchers.IO) { ApiClient.request(base, "POST", "/manager/notifications", token, body) }
+                sheet.dismiss()
+                Toast.makeText(this@AdminActivity, "Annonce envoyée", Toast.LENGTH_SHORT).show()
+                reloadAnnouncements()
+            } catch (e: ApiException) {
+                onDone()
+                if (e.httpCode == 401) handleApiError(e, false)
+                else Toast.makeText(this@AdminActivity, e.message, Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                onDone()
+                Toast.makeText(this@AdminActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun buildAdmin(content: LinearLayout) {
         header(content, "Plus", "Configuration, équipe et bonus")
 
@@ -1649,6 +1873,8 @@ class AdminActivity : AppCompatActivity() {
         if (configured) {
             content.addView(Ui.button(this, "Retirer ce téléphone", "danger") { confirmRemoveHost() })
         }
+
+        buildAnnouncementsSection(content)
 
         sectionTitle(content, "Gestionnaires")
         content.addView(Ui.button(this, "Nouveau gestionnaire", "secondary") { showNewManagerSheet() })
