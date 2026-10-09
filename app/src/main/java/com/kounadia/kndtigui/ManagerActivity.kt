@@ -125,7 +125,16 @@ class ManagerActivity : AppCompatActivity() {
         root.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
         setContentView(root)
 
-        if (SessionStorage.isLoggedIn(this)) showApp() else showLogin(null)
+        if (SessionStorage.isLoggedIn(this)) {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            androidx.core.app.ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 4242)
+        }
+        PushRegistration.register(this)
+            showApp()
+        } else showLogin(null)
     }
 
     override fun onResume() {
@@ -223,6 +232,7 @@ class ManagerActivity : AppCompatActivity() {
     }
 
     private fun showLogin(message: String?) {
+        PushRegistration.unregister(this)
         SessionStorage.clear(this)
         val intent = android.content.Intent(this, LoginActivity::class.java)
         intent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
@@ -2360,7 +2370,6 @@ class ManagerActivity : AppCompatActivity() {
         })
         content.addView(Ui.button(this, "Se déconnecter", "danger") {
             sheet.dismiss()
-            SessionStorage.clear(this)
             showLogin(null)
         })
         sheet.show()

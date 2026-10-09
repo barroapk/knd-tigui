@@ -23,6 +23,20 @@ class KndTiguiApplication : Application() {
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncInProgress = AtomicBoolean(false)
 
+    companion object {
+        const val PUSH_CHANNEL_ID = "knd_alerts"
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            val channel = android.app.NotificationChannel(
+                PUSH_CHANNEL_ID, "Alertes KND", android.app.NotificationManager.IMPORTANCE_HIGH,
+            )
+            getSystemService(android.app.NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
     fun triggerSync() {
         if (!syncInProgress.compareAndSet(false, true)) {
             Log.i(TAG, "Synchronisation deja en cours, declenchement ignore")

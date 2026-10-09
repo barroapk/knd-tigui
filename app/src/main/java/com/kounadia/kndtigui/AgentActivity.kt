@@ -44,6 +44,13 @@ class AgentActivity : AppCompatActivity() {
             return
         }
 
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            androidx.core.app.ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 4242)
+        }
+        PushRegistration.register(this)
         render()
     }
 
@@ -59,6 +66,7 @@ class AgentActivity : AppCompatActivity() {
     }
 
     private fun goToLogin() {
+        PushRegistration.unregister(this)
         SessionStorage.clear(this)
         val intent = Intent(this, LoginActivity::class.java)
         intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
