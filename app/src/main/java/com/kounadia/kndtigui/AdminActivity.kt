@@ -669,6 +669,18 @@ class AdminActivity : AppCompatActivity() {
             shown++
             content.addView(alertCard(toDeposit, "dépôt(s) payé(s) à créditer", Ui.PRIMARY) { openOps("queue") })
         }
+        var waiting = 0
+        for (i in 0 until deposits.length()) {
+            val st = deposits.getJSONObject(i).optString("status")
+            if (st == "PAYMENT_PENDING" || st == "PAYMENT_LATE") waiting++
+        }
+        if (waiting > 0) {
+            shown++
+            content.addView(alertCard(waiting, "dépôt(s) en attente de paiement", Ui.WARNING) {
+                queueSubTab = "waiting"
+                openOps("queue")
+            })
+        }
         if (unmatched.length() > 0) {
             shown++
             content.addView(alertCard(unmatched.length(), "paiement(s) SMS à vérifier", Ui.ERROR) { openOps("verify") })
