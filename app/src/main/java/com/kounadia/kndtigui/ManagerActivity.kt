@@ -2290,6 +2290,57 @@ class ManagerActivity : AppCompatActivity() {
         sheet.show()
     }
 
+    private fun showChangePasswordDialog() {
+        val current = Ui.input(this, "Mot de passe actuel", password = true)
+        val next = Ui.input(this, "Nouveau mot de passe (8 caractères minimum)", password = true)
+        val confirm = Ui.input(this, "Confirmer le nouveau mot de passe", password = true)
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(current)
+        wrap.addView(next)
+        wrap.addView(confirm)
+
+        AlertDialog.Builder(this)
+            .setTitle("Changer le mot de passe")
+            .setView(wrap)
+            .setPositiveButton("Valider") { _, _ ->
+                val c = current.text.toString()
+                val n = next.text.toString()
+                if (n.length < 8) {
+                    Toast.makeText(this, "8 caractères minimum", Toast.LENGTH_LONG).show()
+                } else if (n != confirm.text.toString()) {
+                    Toast.makeText(this, "Les deux mots de passe ne correspondent pas", Toast.LENGTH_LONG).show()
+                } else {
+                    submitPasswordChange(c, n)
+                }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
+    private fun submitPasswordChange(current: String, next: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@ManagerActivity)
+                val body = JSONObject().put("currentPassword", current).put("newPassword", next)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "POST", "/auth/manager/password", token, body)
+                }
+                Toast.makeText(this@ManagerActivity, "Mot de passe modifié", Toast.LENGTH_LONG).show()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@ManagerActivity, e.message, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@ManagerActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun showProfileSheet() {
         val (sheet, content) = Ui.bottomSheet(this)
         val name = SessionStorage.getDisplayName(this) ?: "?"
@@ -2303,6 +2354,10 @@ class ManagerActivity : AppCompatActivity() {
                 listOf("Rôle" to role, "Email" to (SessionStorage.getLastEmail(this) ?: "—")),
             ),
         )
+        content.addView(Ui.button(this, "Changer mon mot de passe", "secondary") {
+            sheet.dismiss()
+            showChangePasswordDialog()
+        })
         content.addView(Ui.button(this, "Se déconnecter", "danger") {
             sheet.dismiss()
             SessionStorage.clear(this)

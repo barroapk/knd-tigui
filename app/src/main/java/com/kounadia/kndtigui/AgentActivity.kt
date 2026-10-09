@@ -163,17 +163,88 @@ class AgentActivity : AppCompatActivity() {
         }
         headerRow.addView(whatsappButton)
 
-        val logoutButton = Ui.text(this, "Quitter", 13f, Ui.ERROR, true)
-        logoutButton.setPadding(dp(12), dp(8), dp(4), dp(8))
-        logoutButton.setOnClickListener {
+        val accountButton = Ui.text(this, "Compte", 13f, Ui.PRIMARY, true)
+        accountButton.setPadding(dp(12), dp(8), dp(4), dp(8))
+        accountButton.setOnClickListener { showAccountSheet() }
+        headerRow.addView(accountButton)
+        return headerRow
+    }
+
+    private fun showAccountSheet() {
+        val (sheet, content) = Ui.bottomSheet(this)
+        val title = Ui.text(this, SessionStorage.getCompanyName(this) ?: (SessionStorage.getDisplayName(this) ?: ""), 20f, Ui.TEXT, true)
+        title.gravity = Gravity.CENTER
+        title.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
+        content.addView(title)
+        content.addView(Ui.section(this, "Compte", listOf(
+            "Code agent" to (SessionStorage.getAgentCode(this) ?: "—"),
+            "Connexion" to (SessionStorage.getIdentifier(this) ?: "—"),
+        )))
+        content.addView(Ui.button(this, "Changer le mot de passe", "secondary") {
+            sheet.dismiss()
+            showChangePasswordDialog()
+        })
+        content.addView(Ui.button(this, "Se déconnecter", "danger") {
+            sheet.dismiss()
             android.app.AlertDialog.Builder(this)
                 .setTitle("Se déconnecter ?")
                 .setPositiveButton("Se déconnecter") { _, _ -> goToLogin() }
                 .setNegativeButton("Annuler", null)
                 .show()
+        })
+        content.addView(Ui.button(this, "Fermer", "secondary") { sheet.dismiss() })
+        sheet.show()
+    }
+
+    private fun showChangePasswordDialog() {
+        val current = Ui.input(this, "Mot de passe actuel", password = true)
+        val next = Ui.input(this, "Nouveau mot de passe (6 caractères minimum)", password = true)
+        val confirm = Ui.input(this, "Confirmer le nouveau mot de passe", password = true)
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(current)
+        wrap.addView(next)
+        wrap.addView(confirm)
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Changer le mot de passe")
+            .setView(wrap)
+            .setPositiveButton("Valider") { _, _ ->
+                val c = current.text.toString()
+                val n = next.text.toString()
+                if (n.length < 6) {
+                    Toast.makeText(this, "6 caractères minimum", Toast.LENGTH_LONG).show()
+                } else if (n != confirm.text.toString()) {
+                    Toast.makeText(this, "Les deux mots de passe ne correspondent pas", Toast.LENGTH_LONG).show()
+                } else {
+                    submitPasswordChange(c, n)
+                }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
+    private fun submitPasswordChange(current: String, next: String) {
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AgentActivity)
+                val token = SessionStorage.getToken(this@AgentActivity) ?: return@launch
+                val body = JSONObject().put("currentPassword", current).put("newPassword", next)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "POST", "/agents/password", token, body)
+                }
+                Toast.makeText(this@AgentActivity, "Mot de passe modifié", Toast.LENGTH_LONG).show()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    goToLogin()
+                } else {
+                    Toast.makeText(this@AgentActivity, e.message, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@AgentActivity, "Connexion impossible. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
         }
-        headerRow.addView(logoutButton)
-        return headerRow
     }
 
     /** Barre flottante : fond et marges distincts des boutons systeme du telephone. */

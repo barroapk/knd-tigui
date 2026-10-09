@@ -1160,6 +1160,15 @@ class AdminActivity : AppCompatActivity() {
         val loadingText = t("Chargement des performances…", 13f, Ui.TEXT2)
         loadingText.setPadding(0, dp(12), 0, 0)
         box.addView(loadingText)
+        content.addView(Ui.button(this, "Réinitialiser le mot de passe", "secondary") {
+            sheet.dismiss()
+            AlertDialog.Builder(this)
+                .setTitle("Réinitialiser le mot de passe ?")
+                .setMessage("Un mot de passe temporaire sera créé pour " + str(a, "companyName") + ". L'ancien ne fonctionnera plus.")
+                .setPositiveButton("Réinitialiser") { _, _ -> resetAgentPassword(id, str(a, "companyName")) }
+                .setNegativeButton("Annuler", null)
+                .show()
+        })
         val agentStatusNow = str(a, "status")
         if (agentStatusNow == "ACTIVE") {
             content.addView(Ui.button(this, "Suspendre cet agent", "secondary") {
@@ -1511,6 +1520,47 @@ class AdminActivity : AppCompatActivity() {
                 }
                 Toast.makeText(this@AdminActivity, "Mois recalculé", Toast.LENGTH_SHORT).show()
                 reloadCommissions()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@AdminActivity, e.message, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@AdminActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun resetAgentPassword(agentId: String, company: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                val r = withContext(Dispatchers.IO) {
+                    JSONObject(ApiClient.request(base, "POST", "/agents/$agentId/reset-password", token, JSONObject()))
+                }
+                val (sheet, content) = Ui.bottomSheet(this@AdminActivity)
+                content.addView(centered("Mot de passe réinitialisé", 20f, Ui.TEXT, true))
+                content.addView(Ui.section(
+                    this@AdminActivity,
+                    company,
+                    listOf(
+                        "Code agent" to str(r, "agentCode"),
+                        "Mot de passe temporaire" to str(r, "temporaryPassword"),
+                    ),
+                    copyable = setOf("Mot de passe temporaire"),
+                    onCopy = { label, value -> copy(label, value) },
+                ))
+                val warning = t(
+                    "Donnez ce mot de passe à l'agent. Il ne sera plus affiché. " +
+                        "L'agent doit le changer dès sa connexion (Compte, Changer le mot de passe).",
+                    12f, Ui.WARNING,
+                )
+                warning.setPadding(0, dp(12), 0, 0)
+                content.addView(warning)
+                content.addView(Ui.button(this@AdminActivity, "Terminer") { sheet.dismiss() })
+                sheet.show()
             } catch (e: ApiException) {
                 if (e.httpCode == 401) {
                     handleApiError(e, false)
@@ -3015,6 +3065,57 @@ class AdminActivity : AppCompatActivity() {
         sheet.show()
     }
 
+    private fun showChangePasswordDialog() {
+        val current = Ui.input(this, "Mot de passe actuel", password = true)
+        val next = Ui.input(this, "Nouveau mot de passe (8 caractères minimum)", password = true)
+        val confirm = Ui.input(this, "Confirmer le nouveau mot de passe", password = true)
+        val wrap = LinearLayout(this)
+        wrap.orientation = LinearLayout.VERTICAL
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(current)
+        wrap.addView(next)
+        wrap.addView(confirm)
+
+        AlertDialog.Builder(this)
+            .setTitle("Changer le mot de passe")
+            .setView(wrap)
+            .setPositiveButton("Valider") { _, _ ->
+                val c = current.text.toString()
+                val n = next.text.toString()
+                if (n.length < 8) {
+                    Toast.makeText(this, "8 caractères minimum", Toast.LENGTH_LONG).show()
+                } else if (n != confirm.text.toString()) {
+                    Toast.makeText(this, "Les deux mots de passe ne correspondent pas", Toast.LENGTH_LONG).show()
+                } else {
+                    submitPasswordChange(c, n)
+                }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
+    private fun submitPasswordChange(current: String, next: String) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                val body = JSONObject().put("currentPassword", current).put("newPassword", next)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "POST", "/auth/manager/password", token, body)
+                }
+                Toast.makeText(this@AdminActivity, "Mot de passe modifié", Toast.LENGTH_LONG).show()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@AdminActivity, e.message, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@AdminActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun showProfileSheet() {
         val (sheet, content) = Ui.bottomSheet(this)
         val name = SessionStorage.getDisplayName(this) ?: "?"
@@ -3028,6 +3129,10 @@ class AdminActivity : AppCompatActivity() {
                 listOf("Rôle" to role, "Email" to (SessionStorage.getLastEmail(this) ?: "—")),
             ),
         )
+        content.addView(Ui.button(this, "Changer mon mot de passe", "secondary") {
+            sheet.dismiss()
+            showChangePasswordDialog()
+        })
         content.addView(Ui.button(this, "Se déconnecter", "danger") {
             sheet.dismiss()
             SessionStorage.clear(this)
