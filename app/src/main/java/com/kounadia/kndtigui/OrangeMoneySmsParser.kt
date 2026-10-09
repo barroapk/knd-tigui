@@ -20,8 +20,11 @@ data class ParsedOrangeMoneyPayment(
 
 object OrangeMoneySmsParser {
 
+    // Insensible a la casse ("Trans id:" client / "Trans ID:" agent) et point
+    // facultatif apres "FCFA" (absent dans les SMS de transfert agent).
     private val regex = Regex(
-        "Vous avez recu ([\\d.]+)\\s*FCFA.*?du (\\d+),(\\S+)\\.\\s*Le solde de votre compte est de ([\\d.]+)\\s*FCFA\\.\\s*Trans id:\\s*(\\S+)\\."
+        "Vous avez recu ([\\d.]+)\\s*FCFA.*?du (\\d+),(\\S+)\\.\\s*Le solde de votre compte est de ([\\d.]+)\\s*FCFA\\.?\\s*Trans id:\\s*(\\S+)\\.",
+        RegexOption.IGNORE_CASE,
     )
 
     fun parse(smsText: String): ParsedOrangeMoneyPayment? {

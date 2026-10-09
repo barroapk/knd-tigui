@@ -46,7 +46,7 @@ class SmsReceiver : BroadcastReceiver() {
 
         val looksLikePaymentReceived = fullBody.contains("Vous avez recu") &&
             fullBody.contains("FCFA") &&
-            fullBody.contains("Trans id:")
+            fullBody.contains("Trans id:", ignoreCase = true)
 
         if (!looksLikePaymentReceived) {
             Log.i(TAG, "SMS ignore : ne correspond pas au format attendu de reception de paiement")
