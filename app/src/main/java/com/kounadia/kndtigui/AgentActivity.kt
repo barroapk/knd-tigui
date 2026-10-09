@@ -128,8 +128,18 @@ class AgentActivity : AppCompatActivity() {
                 root.addView(spacer(10))
                 root.addView(scroll)
                 val cached = cacheRead("commission_history")
-                if (cached != null) showCommission(box, JSONObject(cached))
-                loadCommission(box)
+                val monthsBox = LinearLayout(this)
+                monthsBox.orientation = LinearLayout.VERTICAL
+                val paymentsBox = LinearLayout(this)
+                paymentsBox.orientation = LinearLayout.VERTICAL
+                box.addView(monthsBox)
+                box.addView(paymentsBox)
+                if (cached != null) showCommission(monthsBox, JSONObject(cached))
+                loadCommission(monthsBox)
+                val cachedPay = cacheRead("commission_payments")
+                val cachedPayArray = try { if (cachedPay != null) JSONArray(cachedPay) else null } catch (_: Exception) { null }
+                showPayments(paymentsBox, cachedPayArray)
+                loadPayments(paymentsBox)
             }
         }
 
@@ -602,6 +612,83 @@ class AgentActivity : AppCompatActivity() {
         if (iso.length < 7) return iso
         val m = iso.substring(5, 7).toIntOrNull() ?: return iso
         return names.getOrElse(m - 1) { iso } + " " + iso.substring(0, 4)
+    }
+
+    private fun loadPayments(box: LinearLayout) {
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AgentActivity)
+                val token = SessionStorage.getToken(this@AgentActivity) ?: return@launch
+                val response = withContext(Dispatchers.IO) {
+                    JSONArray(ApiClient.request(base, "GET", "/agents/commissions/payments", token, null))
+                }
+                cacheWrite("commission_payments", response.toString())
+                showPayments(box, response)
+            } catch (_: Exception) {
+                // Le cache local reste affiche.
+            }
+        }
+    }
+
+    private fun showPayments(box: LinearLayout, items: JSONArray?) {
+        box.removeAllViews()
+
+        val title = Ui.text(this, "Paiements reçus", 15f, Ui.TEXT, true)
+        title.setPadding(0, dp(18), 0, dp(8))
+        box.addView(title)
+
+        if (items == null) {
+            box.addView(Ui.text(this, "Chargement…", 13f, Ui.TEXT2))
+            return
+        }
+        if (items.length() == 0) {
+            box.addView(Ui.text(this, "Aucun paiement reçu pour l'instant.", 13f, Ui.TEXT2))
+            return
+        }
+
+        var total = 0L
+        for (i in 0 until items.length()) total += items.getJSONObject(i).optLong("amount", 0)
+        box.addView(Ui.text(this, "Total reçu : ${formatAmount(total)} FCFA", 13f, Ui.SUCCESS, true))
+        box.addView(spacer(8))
+
+        for (i in 0 until items.length()) {
+            val p = items.getJSONObject(i)
+
+            val card = LinearLayout(this)
+            card.orientation = LinearLayout.VERTICAL
+            card.setPadding(dp(16), dp(14), dp(16), dp(14))
+            card.background = Ui.rounded(this, Ui.SURFACE, 14, Ui.BORDER)
+            val lp = LinearLayout.LayoutParams(MATCH, WRAP)
+            lp.setMargins(0, 0, 0, dp(8))
+            card.layoutParams = lp
+
+            val periodStart = if (p.isNull("periodStart")) "" else p.optString("periodStart")
+            val top = LinearLayout(this)
+            top.orientation = LinearLayout.HORIZONTAL
+            top.gravity = Gravity.CENTER_VERTICAL
+            val label = Ui.text(
+                this,
+                if (periodStart.isBlank()) "Commission" else "Commission de " + monthLabel(periodStart),
+                14f, Ui.TEXT, true,
+            )
+            label.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            top.addView(label)
+            top.addView(Ui.text(this, "+${formatAmount(p.optLong("amount", 0))} F", 15f, Ui.SUCCESS, true))
+            card.addView(top)
+
+            val paidAt = if (p.isNull("paidAt")) "" else p.optString("paidAt")
+            card.addView(Ui.text(this, "Reçu le " + shortDate(paidAt).substringBefore(' '), 12f, Ui.TEXT2))
+
+            val ref = if (p.isNull("paymentReference")) "" else p.optString("paymentReference")
+            if (ref.isNotEmpty()) card.addView(Ui.text(this, "Référence : $ref", 12f, Ui.TEXT2))
+
+            card.addView(Ui.text(
+                this,
+                "Dépôts ${formatAmount(p.optLong("depositVolume", 0))} F · retraits ${formatAmount(p.optLong("withdrawalVolume", 0))} F",
+                12f, Ui.TEXT2,
+            ))
+            box.addView(card)
+        }
     }
 
     private fun showCommission(box: LinearLayout, o: JSONObject) {
