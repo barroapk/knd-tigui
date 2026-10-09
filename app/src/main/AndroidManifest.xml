@@ -58,7 +58,7 @@
 
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="knd_alerts" />
+            android:value="knd_alerts_v2" />
 
         <receiver
             android:name=".SmsReceiver"

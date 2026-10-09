@@ -22,6 +22,7 @@ class KndMessagingService : FirebaseMessagingService() {
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .build()
         try {
             NotificationManagerCompat.from(this).notify(System.currentTimeMillis().toInt(), notification)
