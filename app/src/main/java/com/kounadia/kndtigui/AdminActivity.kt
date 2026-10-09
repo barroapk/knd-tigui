@@ -1226,7 +1226,7 @@ class AdminActivity : AppCompatActivity() {
         }
     }
 
-    private fun commissionCard(it: JSONObject): View {
+    private fun commissionCard(c: JSONObject): View {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
         card.setPadding(dp(16), dp(14), dp(16), dp(14))
@@ -1238,51 +1238,51 @@ class AdminActivity : AppCompatActivity() {
         val top = LinearLayout(this)
         top.orientation = LinearLayout.HORIZONTAL
         top.gravity = Gravity.CENTER_VERTICAL
-        val name = t(str(it, "companyName"), 16f, Ui.TEXT, true)
+        val name = t(str(c, "companyName"), 16f, Ui.TEXT, true)
         name.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         top.addView(name)
-        val paid = str(it, "status") == "PAID"
+        val paid = str(c, "status") == "PAID"
         top.addView(Ui.pill(this, if (paid) "Payé" else "À payer", if (paid) Ui.SUCCESS else Ui.WARNING))
         card.addView(top)
 
-        card.addView(t(str(it, "agentCode"), 12f, Ui.TEXT2))
+        card.addView(t(str(c, "agentCode"), 12f, Ui.TEXT2))
         val line = t(
-            "Dépôts " + fcfa(it.optDouble("depositVolume", 0.0)) +
-                " · retraits " + fcfa(it.optDouble("withdrawalVolume", 0.0)),
+            "Dépôts " + fcfa(c.optDouble("depositVolume", 0.0)) +
+                " · retraits " + fcfa(c.optDouble("withdrawalVolume", 0.0)),
             12f, Ui.TEXT2,
         )
         line.setPadding(0, dp(6), 0, 0)
         card.addView(line)
-        card.addView(t("Commission : " + fcfa(it.optDouble("totalCommission", 0.0)), 14f, Ui.TEXT, true))
+        card.addView(t("Commission : " + fcfa(c.optDouble("totalCommission", 0.0)), 14f, Ui.TEXT, true))
         if (paid) {
-            card.addView(t("Payé le " + shortDate(str(it, "paidAt")).substringBefore(' '), 12f, Ui.TEXT2))
+            card.addView(t("Payé le " + shortDate(str(c, "paidAt")).substringBefore(' '), 12f, Ui.TEXT2))
         }
 
-        card.setOnClickListener { showCommissionSheet(it) }
+        card.setOnClickListener { showCommissionSheet(c) }
         return card
     }
 
-    private fun showCommissionSheet(it: JSONObject) {
-        val periodId = str(it, "periodId")
-        val paid = str(it, "status") == "PAID"
-        val total = it.optDouble("totalCommission", 0.0)
+    private fun showCommissionSheet(c: JSONObject) {
+        val periodId = str(c, "periodId")
+        val paid = str(c, "status") == "PAID"
+        val total = c.optDouble("totalCommission", 0.0)
         val (sheet, content) = Ui.bottomSheet(this)
 
-        content.addView(centered(str(it, "companyName"), 20f, Ui.TEXT, true))
+        content.addView(centered(str(c, "companyName"), 20f, Ui.TEXT, true))
         content.addView(Ui.section(this, monthLabel(commissionMonth), listOf(
-            "Dépôts" to fcfa(it.optDouble("depositVolume", 0.0)),
-            "Commission dépôts" to fcfa(it.optDouble("depositCommission", 0.0)),
-            "Retraits" to fcfa(it.optDouble("withdrawalVolume", 0.0)),
-            "Commission retraits" to fcfa(it.optDouble("withdrawalCommission", 0.0)),
+            "Dépôts" to fcfa(c.optDouble("depositVolume", 0.0)),
+            "Commission dépôts" to fcfa(c.optDouble("depositCommission", 0.0)),
+            "Retraits" to fcfa(c.optDouble("withdrawalVolume", 0.0)),
+            "Commission retraits" to fcfa(c.optDouble("withdrawalCommission", 0.0)),
             "Total à payer" to fcfa(total),
         )))
         content.addView(Ui.section(this, "Envoyer sur", listOf(
-            "Orange Money" to str(it, "orangeMoneyPhone"),
-            "Code agent" to str(it, "agentCode"),
+            "Orange Money" to str(c, "orangeMoneyPhone"),
+            "Code agent" to str(c, "agentCode"),
         ), copyable = setOf("Orange Money"), onCopy = { label, value -> copy(label, value) }))
 
         if (paid) {
-            content.addView(t("Payé le " + longDate(str(it, "paidAt")), 13f, Ui.SUCCESS).also { v -> v.setPadding(0, dp(12), 0, 0) })
+            content.addView(t("Payé le " + longDate(str(c, "paidAt")), 13f, Ui.SUCCESS).also { v -> v.setPadding(0, dp(12), 0, 0) })
         } else if (total > 0 && periodId.isNotEmpty()) {
             content.addView(Ui.button(this, "Marquer payé") {
                 sheet.dismiss()
@@ -1292,7 +1292,7 @@ class AdminActivity : AppCompatActivity() {
                 wrap.addView(input)
                 AlertDialog.Builder(this)
                     .setTitle("Confirmer le paiement")
-                    .setMessage("Confirmez uniquement si ${fcfa(total)} ont réellement été envoyés sur le " + str(it, "orangeMoneyPhone") + ".")
+                    .setMessage("Confirmez uniquement si ${fcfa(total)} ont réellement été envoyés sur le " + str(c, "orangeMoneyPhone") + ".")
                     .setView(wrap)
                     .setPositiveButton("Oui, payé") { _, _ ->
                         val body = JSONObject().put("paymentMethod", "orange_money")
