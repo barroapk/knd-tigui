@@ -162,6 +162,17 @@ class AgentActivity : AppCompatActivity() {
             }
         }
         headerRow.addView(whatsappButton)
+
+        val logoutButton = Ui.text(this, "Quitter", 13f, Ui.ERROR, true)
+        logoutButton.setPadding(dp(12), dp(8), dp(4), dp(8))
+        logoutButton.setOnClickListener {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Se déconnecter ?")
+                .setPositiveButton("Se déconnecter") { _, _ -> goToLogin() }
+                .setNegativeButton("Annuler", null)
+                .show()
+        }
+        headerRow.addView(logoutButton)
         return headerRow
     }
 
