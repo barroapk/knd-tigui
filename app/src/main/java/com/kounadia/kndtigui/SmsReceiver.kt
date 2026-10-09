@@ -64,7 +64,7 @@ class SmsReceiver : BroadcastReceiver() {
         Log.i(TAG, "Expediteur: ${parsed.senderPhone} (${parsed.senderName})")
         Log.i(TAG, "Transaction ID: ${parsed.transactionId}")
 
-        val wasNew = savePaymentEvent(prefs, parsed, timestamp)
+        val wasNew = savePaymentEvent(prefs, parsed, timestamp, fullBody)
 
         if (wasNew) {
             Toast.makeText(context, "Paiement detecte: ${parsed.amount} FCFA", Toast.LENGTH_LONG).show()
@@ -84,7 +84,8 @@ class SmsReceiver : BroadcastReceiver() {
     private fun savePaymentEvent(
         prefs: SharedPreferences,
         parsed: ParsedOrangeMoneyPayment,
-        timestamp: Long
+        timestamp: Long,
+        rawMessage: String = "",
     ): Boolean {
         val existing = prefs.getString(KEY_PAYMENT_EVENTS, "[]") ?: "[]"
         val array = try {
@@ -107,6 +108,7 @@ class SmsReceiver : BroadcastReceiver() {
             put("newBalance", parsed.newBalance)
             put("transactionId", parsed.transactionId)
             put("timestamp", timestamp)
+            put("rawMessage", rawMessage)
             put("status", "PENDING_SYNC")
         }
 

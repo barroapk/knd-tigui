@@ -115,6 +115,7 @@ object SyncService {
                 put("newBalance", entry.optDouble("newBalance"))
                 put("transactionId", entry.optString("transactionId"))
                 put("receivedAt", isoFormat.format(Date(timestamp)))
+                put("rawMessage", entry.optString("rawMessage", ""))
             }
 
             OutputStreamWriter(connection.outputStream).use { it.write(body.toString()) }
