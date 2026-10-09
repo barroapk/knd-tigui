@@ -223,6 +223,14 @@ class ManagerActivity : AppCompatActivity() {
     }
 
     private fun showLogin(message: String?) {
+        SessionStorage.clear(this)
+        val intent = android.content.Intent(this, LoginActivity::class.java)
+        intent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+        startActivity(intent)
+        finish()
+    }
+
+    private fun showLegacyLogin(message: String?) {
         navBar?.let { root.removeView(it) }
         navBar = null
         navRow = null
