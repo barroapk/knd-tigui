@@ -987,6 +987,33 @@ class AdminActivity : AppCompatActivity() {
         val loadingText = t("Chargement des performances…", 13f, Ui.TEXT2)
         loadingText.setPadding(0, dp(12), 0, 0)
         box.addView(loadingText)
+        val agentStatusNow = str(a, "status")
+        if (agentStatusNow == "ACTIVE") {
+            content.addView(Ui.button(this, "Suspendre cet agent", "secondary") {
+                sheet.dismiss()
+                askAgentStatusReason("Suspendre cet agent", "Motif de la suspension") { reason ->
+                    changeAgentStatus(id, "SUSPENDED", reason)
+                }
+            })
+        } else {
+            content.addView(Ui.button(this, "Réactiver cet agent") {
+                sheet.dismiss()
+                AlertDialog.Builder(this)
+                    .setTitle("Réactiver cet agent ?")
+                    .setMessage("Il pourra de nouveau se connecter et faire des opérations.")
+                    .setPositiveButton("Réactiver") { _, _ -> changeAgentStatus(id, "ACTIVE", null) }
+                    .setNegativeButton("Annuler", null)
+                    .show()
+            })
+        }
+        if (agentStatusNow != "DISABLED") {
+            content.addView(Ui.button(this, "Désactiver cet agent", "danger") {
+                sheet.dismiss()
+                askAgentStatusReason("Désactiver cet agent", "Motif de la désactivation") { reason ->
+                    changeAgentStatus(id, "DISABLED", reason)
+                }
+            })
+        }
         content.addView(Ui.button(this, "Fermer", "secondary") { sheet.dismiss() })
         sheet.show()
 
@@ -1011,6 +1038,56 @@ class AdminActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 box.removeAllViews()
                 box.addView(t("Impossible de charger les performances.", 13f, Ui.ERROR))
+            }
+        }
+    }
+
+    private fun askAgentStatusReason(title: String, hint: String, onValid: (String) -> Unit) {
+        val input = Ui.input(this, hint)
+        val wrap = LinearLayout(this)
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(input)
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(wrap)
+            .setPositiveButton("Valider") { _, _ ->
+                val reason = input.text.toString().trim()
+                if (reason.length < 3) {
+                    Toast.makeText(this, "Motif requis (3 caractères minimum)", Toast.LENGTH_SHORT).show()
+                } else {
+                    onValid(reason)
+                }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
+    private fun changeAgentStatus(agentId: String, status: String, reason: String?) {
+        val token = SessionStorage.getToken(this) ?: return
+        scope.launch {
+            try {
+                val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
+                val body = JSONObject().put("status", status)
+                if (reason != null) body.put("reason", reason)
+                withContext(Dispatchers.IO) {
+                    ApiClient.request(base, "POST", "/agents/$agentId/status", token, body)
+                }
+                val message = when (status) {
+                    "ACTIVE" -> "Agent réactivé"
+                    "SUSPENDED" -> "Agent suspendu"
+                    else -> "Agent désactivé"
+                }
+                Toast.makeText(this@AdminActivity, message, Toast.LENGTH_SHORT).show()
+                reloadAgentsOverview()
+            } catch (e: ApiException) {
+                if (e.httpCode == 401) {
+                    handleApiError(e, false)
+                } else {
+                    Toast.makeText(this@AdminActivity, e.message, Toast.LENGTH_LONG).show()
+                    reloadAgentsOverview()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@AdminActivity, "Serveur injoignable. Réessayez.", Toast.LENGTH_SHORT).show()
             }
         }
     }
