@@ -3234,7 +3234,9 @@ class AdminActivity : AppCompatActivity() {
                     .setMessage("Vérifiez d'abord dans Max It ou un autre moyen que ce paiement a bien été reçu avant de continuer. Cette action attribue le dépôt à vous-même pour créditer le compte.")
                     .setPositiveButton("Oui, paiement confirmé") { _, _ ->
                         sheet.dismiss()
-                        runAction("/manager/deposits/$id/confirm-manually", "Dépôt confirmé manuellement")
+                        askManualReason { reason ->
+                            runAction("/manager/deposits/$id/confirm-manually", "Dépôt confirmé manuellement", JSONObject().put("reason", reason))
+                        }
                     }
                     .setNegativeButton("Annuler", null)
                     .show()
@@ -3470,7 +3472,27 @@ class AdminActivity : AppCompatActivity() {
         }
     }
 
-    private fun runAction(path: String, successMessage: String) {
+    private fun askManualReason(onValid: (String) -> Unit) {
+        val input = Ui.input(this, "Motif (ex : vérifié dans Max It)")
+        val wrap = LinearLayout(this)
+        wrap.setPadding(dp(20), dp(8), dp(20), 0)
+        wrap.addView(input)
+        AlertDialog.Builder(this)
+            .setTitle("Motif de la confirmation")
+            .setView(wrap)
+            .setPositiveButton("Valider") { _, _ ->
+                val reason = input.text.toString().trim()
+                if (reason.length < 3) {
+                    Toast.makeText(this, "Motif requis (3 caractères minimum)", Toast.LENGTH_SHORT).show()
+                } else {
+                    onValid(reason)
+                }
+            }
+            .setNegativeButton("Annuler", null)
+            .show()
+    }
+
+    private fun runAction(path: String, successMessage: String, body: JSONObject? = null) {
         if (busy) return
         val token = SessionStorage.getToken(this) ?: return
         busy = true
@@ -3480,7 +3502,7 @@ class AdminActivity : AppCompatActivity() {
         scope.launch {
             try {
                 val base = ConfigStorage.getApiBaseUrl(this@AdminActivity)
-                withContext(Dispatchers.IO) { ApiClient.request(base, "POST", path, token) }
+                withContext(Dispatchers.IO) { ApiClient.request(base, "POST", path, token, body) }
                 busy = false
                 Toast.makeText(this@AdminActivity, successMessage, Toast.LENGTH_SHORT).show()
                 loadData(silent = false)
