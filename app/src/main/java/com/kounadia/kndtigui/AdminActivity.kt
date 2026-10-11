@@ -148,6 +148,7 @@ class AdminActivity : AppCompatActivity() {
         setContentView(root)
 
         if (SessionStorage.isLoggedIn(this)) {
+            autoConfigureHostIfNeeded()
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -3012,6 +3013,19 @@ class AdminActivity : AppCompatActivity() {
             content.addView(row)
         }
         sheet.show()
+    }
+
+    private var autoHostTried = false
+
+    /** Admin sur un telephone non configure : il devient hote SMS sans geste manuel. */
+    private fun autoConfigureHostIfNeeded() {
+        if (autoHostTried) return
+        if (SessionStorage.getRole(this) != "ADMIN") return
+        if (ConfigStorage.isConfigured(this)) return
+        val id = SessionStorage.getUserId(this) ?: return
+        autoHostTried = true
+        ensureSmsPermission()
+        configureHost(id, SessionStorage.getDisplayName(this) ?: "Admin")
     }
 
     private fun configureHost(managerId: String, managerName: String) {
