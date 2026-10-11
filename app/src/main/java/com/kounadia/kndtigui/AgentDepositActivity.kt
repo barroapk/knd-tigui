@@ -178,6 +178,7 @@ class AgentDepositActivity : AppCompatActivity() {
                         messageText.text = "Compte 1xBet introuvable ou non vérifié"
                     }
                 } catch (e: ApiException) {
+                    if (e.httpCode == 401) { SessionExpiry.handle(this@AgentDepositActivity); finish(); return@launch }
                     busy = false
                     nextButton.isEnabled = true
                     nextButton.alpha = 1f
@@ -352,6 +353,7 @@ class AgentDepositActivity : AppCompatActivity() {
                     sheet.dismiss()
                     Toast.makeText(this@AgentDepositActivity, "$playerName ajouté aux favoris", Toast.LENGTH_SHORT).show()
                 } catch (e: ApiException) {
+                    if (e.httpCode == 401) { SessionExpiry.handle(this@AgentDepositActivity); finish(); return@launch }
                     confirmButton.isEnabled = true
                     confirmButton.alpha = 1f
                     messageText.setTextColor(Ui.ERROR)
@@ -489,6 +491,7 @@ class AgentDepositActivity : AppCompatActivity() {
                     busy = false
                     renderStep3(response)
                 } catch (e: ApiException) {
+                    if (e.httpCode == 401) { SessionExpiry.handle(this@AgentDepositActivity); finish(); return@launch }
                     busy = false
                     confirmButton.isEnabled = true
                     confirmButton.alpha = 1f

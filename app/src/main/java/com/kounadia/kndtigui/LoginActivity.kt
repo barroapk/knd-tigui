@@ -91,7 +91,7 @@ class LoginActivity : AppCompatActivity() {
         val passwordInput = field("Mot de passe", true)
         col.addView(passwordInput)
 
-        val messageText = t("", 13f, Ui.ERROR)
+        val messageText = t(intent.getStringExtra("message") ?: "", 13f, Ui.ERROR)
         messageText.setPadding(0, dp(12), 0, 0)
         col.addView(messageText)
 

@@ -192,6 +192,7 @@ class AgentWithdrawActivity : AppCompatActivity() {
                     renderDoneStep(response)
                     openWhatsapp(response.optLong("amount", amountValue))
                 } catch (e: ApiException) {
+                    if (e.httpCode == 401) { SessionExpiry.handle(this@AgentWithdrawActivity); finish(); return@launch }
                     busy = false
                     confirmButton.isEnabled = true
                     confirmButton.alpha = 1f
