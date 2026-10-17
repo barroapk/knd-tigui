@@ -34,6 +34,11 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".KounadiaAdminActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".AgentActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />

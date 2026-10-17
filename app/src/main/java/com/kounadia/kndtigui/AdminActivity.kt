@@ -1885,6 +1885,11 @@ class AdminActivity : AppCompatActivity() {
             content.addView(Ui.button(this, "Retirer ce téléphone", "danger") { confirmRemoveHost() })
         }
 
+        sectionTitle(content, "KOUNADIA")
+        content.addView(Ui.button(this, "Statistiques et publicités KOUNADIA", "secondary") {
+            startActivity(android.content.Intent(this, KounadiaAdminActivity::class.java))
+        })
+
         buildAnnouncementsSection(content)
 
         sectionTitle(content, "Gestionnaires")
