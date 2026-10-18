@@ -778,7 +778,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         e.filters = arrayOf(InputFilter.LengthFilter(max))
         if (multi) {
             e.isSingleLine = false
-            e.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTILINE
+            e.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             e.maxLines = 3
         }
         if (type >= 0) e.inputType = type
