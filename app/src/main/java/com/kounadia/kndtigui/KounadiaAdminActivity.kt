@@ -45,7 +45,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 private const val KM = ViewGroup.LayoutParams.MATCH_PARENT
 private const val KW = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -188,7 +191,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     null
                 }
-                ads = unwrapArr(api("GET", "/admin/kounadia/ads"))
+                ads = fetchAds()
                 loadImages()
             } catch (e: Exception) {
                 error = e.message ?: "Erreur réseau"
@@ -198,10 +201,55 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
     }
 
+    /** Nettoie (pubs expirées + photos orphelines) puis charge la liste complète. */
+    private suspend fun fetchAds(): JSONArray {
+        try {
+            api("POST", "/admin/kounadia/ads/sweep", JSONObject())
+        } catch (e: Exception) {
+        }
+        return try {
+            unwrapArr(api("GET", "/admin/kounadia/ads-full"))
+        } catch (e: Exception) {
+            unwrapArr(api("GET", "/admin/kounadia/ads"))
+        }
+    }
+
+    private fun pagesOf(ad: JSONObject): List<String> {
+        val out = ArrayList<String>()
+        val arr = ad.optJSONArray("pages")
+        if (arr != null) for (i in 0 until arr.length()) {
+            val u = arr.optString(i, "")
+            if (u.startsWith("http")) out.add(u)
+        }
+        val img = str(ad, "image_url")
+        if (out.isEmpty() && img.startsWith("http")) out.add(img)
+        return out.take(5)
+    }
+
+    private fun endsOf(ad: JSONObject): Date? {
+        val v = str(ad, "ends_at")
+        if (v.isEmpty()) return null
+        return try {
+            val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            f.timeZone = TimeZone.getTimeZone("UTC")
+            f.parse(v.take(19))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun isoUtc(d: Date): String {
+        val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+        f.timeZone = TimeZone.getTimeZone("UTC")
+        return f.format(d)
+    }
+
+    private fun dayLabel(d: Date): String = SimpleDateFormat("dd/MM/yyyy", Locale.FRANCE).format(d)
+
     private fun reloadAds() {
         scope.launch {
             try {
-                ads = unwrapArr(api("GET", "/admin/kounadia/ads"))
+                ads = fetchAds()
                 loadImages()
             } catch (e: Exception) {
                 toast(e.message ?: "Erreur réseau")
@@ -211,9 +259,10 @@ class KounadiaAdminActivity : AppCompatActivity() {
     }
 
     private fun loadImages() {
-        for (i in 0 until ads.length()) {
-            val url = str(ads.getJSONObject(i), "image_url")
-            if (url.isEmpty() || images.containsKey(url) || !imageLoading.add(url)) continue
+        val urls = LinkedHashSet<String>()
+        for (i in 0 until ads.length()) urls.addAll(pagesOf(ads.getJSONObject(i)))
+        for (url in urls) {
+            if (images.containsKey(url) || !imageLoading.add(url)) continue
             scope.launch {
                 val bmp = withContext(Dispatchers.IO) { fetchBitmap(url) }
                 imageLoading.remove(url)
@@ -269,8 +318,16 @@ class KounadiaAdminActivity : AppCompatActivity() {
             m.postRotate(deg)
             bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
         }
+        // Recadrage au centre au format de la carte publicitaire (2:1).
+        val targetH = bmp.width / 2
+        if (bmp.height > targetH) {
+            bmp = Bitmap.createBitmap(bmp, 0, (bmp.height - targetH) / 2, bmp.width, targetH)
+        } else if (bmp.height < targetH) {
+            val w = bmp.height * 2
+            bmp = Bitmap.createBitmap(bmp, (bmp.width - w) / 2, 0, w, bmp.height)
+        }
         if (bmp.width > 1080) {
-            bmp = Bitmap.createScaledBitmap(bmp, 1080, bmp.height * 1080 / bmp.width, true)
+            bmp = Bitmap.createScaledBitmap(bmp, 1080, 540, true)
         }
         var q = 85
         var out: ByteArray
@@ -609,11 +666,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val active = ad.optBoolean("active", true)
         val c = card()
 
-        val url = str(ad, "image_url")
+        val pages = pagesOf(ad)
         val prev = adPreview(
             str(ad, "title"), str(ad, "text"), str(ad, "cta"), str(ad, "link").isNotEmpty(),
             color(str(ad, "color1"), 0xFF4F46E5.toInt()), color(str(ad, "color2"), 0xFF7C3AED.toInt()),
-            if (url.isEmpty()) null else images[url],
+            pages.firstOrNull()?.let { images[it] }, pages.size,
         )
         if (!active) prev.alpha = 0.45f
         c.addView(prev)
@@ -623,7 +680,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
         info.gravity = Gravity.CENTER_VERTICAL
         info.setPadding(0, dp(12), 0, 0)
         info.addView(Ui.pill(this, if (active) "Active" else "Désactivée", if (active) Ui.SUCCESS else Ui.TEXT2))
-        val pos = t("  Position ${ad.optInt("position")}", 12f, Ui.TEXT2, true)
+        val end = endsOf(ad)
+        val pos = t("  " + (if (pages.size > 1) "${pages.size} pages · " else "") + (if (end == null) "sans limite" else "jusqu'au ${dayLabel(end)}"), 12f, Ui.TEXT2, true)
         info.addView(pos, LinearLayout.LayoutParams(0, KW, 1f))
         val (views, clicks) = st[id] ?: Pair(0, 0)
         val ctr = if (views > 0) String.format(Locale.FRANCE, "%.1f %%", clicks * 100.0 / views) else "–"
@@ -679,7 +737,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private fun confirmDelete(id: String, title: String) {
         AlertDialog.Builder(this)
             .setTitle("Supprimer la publicité ?")
-            .setMessage("« $title » et sa photo seront supprimées définitivement.")
+            .setMessage("« $title » et toutes ses photos seront supprimées définitivement (espace libéré sur Supabase).")
             .setNegativeButton("Annuler", null)
             .setPositiveButton("Supprimer") { _, _ ->
                 scope.launch {
@@ -696,70 +754,78 @@ class KounadiaAdminActivity : AppCompatActivity() {
     }
 
     /** Aperçu identique à la bannière de l'application KOUNADIA. */
-    private fun adPreview(title: String, text: String, cta: String, hasLink: Boolean, c1: Int, c2: Int, bmp: Bitmap?): FrameLayout {
-        val f = FrameLayout(this)
+    private fun chip(value: String, size: Float): TextView {
+        val c = t(value, size, Color.WHITE, true)
+        c.letterSpacing = 0.06f
+        c.setPadding(dp(8), dp(3), dp(8), dp(3))
+        c.background = Ui.rounded(this, Color.argb(110, 0, 0, 0), 20)
+        return c
+    }
+
+    private fun adPreview(title: String, text: String, cta: String, hasLink: Boolean, c1: Int, c2: Int, bmp: Bitmap?, pageCount: Int = 0, page: Int = 0): FrameLayout {
+        val f = RatioFrame(this)
         val g = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2))
         g.cornerRadius = dp(18).toFloat()
         f.background = g
         f.clipToOutline = true
 
+        val count = maxOf(pageCount, if (bmp != null) 1 else 0)
+        val lastPage = count <= 1 || page >= count - 1
         if (bmp != null) {
             val iv = ImageView(this)
             iv.scaleType = ImageView.ScaleType.CENTER_CROP
             iv.setImageBitmap(bmp)
             f.addView(iv, FrameLayout.LayoutParams(KM, KM))
-            val ov = View(this)
-            ov.background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(Color.argb(200, 0, 0, 0), Color.argb(40, 0, 0, 0)),
-            )
-            f.addView(ov, FrameLayout.LayoutParams(KM, KM))
+        } else if (count > 0) {
+            f.addView(t("Chargement de la photo…", 12f, Color.argb(200, 255, 255, 255)), FrameLayout.LayoutParams(KW, KW, Gravity.CENTER))
         } else {
             val b1 = View(this)
             b1.background = Ui.circle(Color.argb(31, 255, 255, 255))
-            val l1 = FrameLayout.LayoutParams(dp(120), dp(120), Gravity.END or Gravity.TOP)
-            l1.setMargins(0, -dp(40), -dp(30), 0)
+            val l1 = FrameLayout.LayoutParams(dp(170), dp(170), Gravity.END or Gravity.TOP)
+            l1.setMargins(0, -dp(50), -dp(40), 0)
             f.addView(b1, l1)
             val b2 = View(this)
             b2.background = Ui.circle(Color.argb(20, 255, 255, 255))
-            val l2 = FrameLayout.LayoutParams(dp(90), dp(90), Gravity.END or Gravity.BOTTOM)
-            l2.setMargins(0, 0, dp(60), -dp(50))
+            val l2 = FrameLayout.LayoutParams(dp(130), dp(130), Gravity.START or Gravity.BOTTOM)
+            l2.setMargins(-dp(30), 0, 0, -dp(60))
             f.addView(b2, l2)
+            val col = LinearLayout(this)
+            col.orientation = LinearLayout.VERTICAL
+            col.gravity = Gravity.CENTER_VERTICAL
+            col.setPadding(dp(18), dp(34), dp(18), dp(56))
+            val tt = t(title.ifEmpty { "Titre de la publicité" }, 19f, Color.WHITE, true)
+            tt.maxLines = 2
+            tt.ellipsize = TextUtils.TruncateAt.END
+            col.addView(tt)
+            if (text.isNotEmpty()) {
+                val tx = t(text, 13f, Color.argb(230, 255, 255, 255))
+                tx.maxLines = 3
+                tx.ellipsize = TextUtils.TruncateAt.END
+                tx.setPadding(0, dp(6), 0, 0)
+                col.addView(tx)
+            }
+            f.addView(col, FrameLayout.LayoutParams(KM, KM))
         }
-
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(dp(14), dp(10), dp(10), dp(12))
-        val col = LinearLayout(this)
-        col.orientation = LinearLayout.VERTICAL
-        val sp = t("SPONSORISÉ", 9f, Color.argb(180, 255, 255, 255), true)
-        sp.letterSpacing = 0.12f
-        col.addView(sp)
-        val tt = t(title.ifEmpty { "Titre de la publicité" }, 15f, Color.WHITE, true)
-        tt.maxLines = 1
-        tt.ellipsize = TextUtils.TruncateAt.END
-        col.addView(tt)
-        if (text.isNotEmpty()) {
-            val tx = t(text, 12f, Color.argb(230, 255, 255, 255))
-            tx.maxLines = 2
-            tx.ellipsize = TextUtils.TruncateAt.END
-            col.addView(tx)
+        val sp = FrameLayout.LayoutParams(KW, KW, Gravity.START or Gravity.TOP)
+        sp.setMargins(dp(10), dp(10), 0, 0)
+        f.addView(chip("SPONSORISÉ", 9f), sp)
+        if (count > 1) {
+            val cp = FrameLayout.LayoutParams(KW, KW, Gravity.END or Gravity.TOP)
+            cp.setMargins(0, dp(10), dp(10), 0)
+            f.addView(chip("${page + 1}/$count", 11f), cp)
         }
-        row.addView(col, LinearLayout.LayoutParams(0, KW, 1f))
-        if (cta.isNotEmpty() && hasLink) {
-            val c = t("$cta  →", 11f, c1, true)
+        if (cta.isNotEmpty() && hasLink && lastPage) {
+            val c = t("$cta  →", 13f, c1, true)
             c.maxLines = 1
             c.ellipsize = TextUtils.TruncateAt.END
-            c.maxWidth = dp(110)
-            c.setPadding(dp(10), dp(6), dp(10), dp(6))
-            c.background = Ui.rounded(this, Color.WHITE, 20)
-            val lp = LinearLayout.LayoutParams(KW, KW)
-            lp.setMargins(dp(8), 0, 0, 0)
-            row.addView(c, lp)
+            c.maxWidth = dp(170)
+            c.setPadding(dp(14), dp(8), dp(14), dp(8))
+            c.background = Ui.rounded(this, Color.WHITE, 22)
+            val lp = FrameLayout.LayoutParams(KW, KW, Gravity.END or Gravity.BOTTOM)
+            lp.setMargins(0, 0, dp(12), dp(12))
+            f.addView(c, lp)
         }
-        f.addView(row, FrameLayout.LayoutParams(KM, KM))
-        f.layoutParams = LinearLayout.LayoutParams(KM, dp(100))
+        f.layoutParams = LinearLayout.LayoutParams(KM, KW)
         return f
     }
 
@@ -821,14 +887,17 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private fun openEditor(ad: JSONObject?) {
         val (dialog, box) = Ui.bottomSheet(this)
         val adId = if (ad == null) "" else str(ad, "id")
-        val oldUrl = if (ad == null) "" else str(ad, "image_url")
+        // Pages : URL déjà en ligne, ou photo locale (base64) à envoyer.
+        data class Pg(val url: String?, val b64: String?, val bmp: Bitmap?)
+        val pages = ArrayList<Pg>()
+        if (ad != null) for (u in pagesOf(ad)) pages.add(Pg(u, null, images[u]))
+        var previewPage = 0
+        var endMode = if (ad == null || endsOf(ad) == null) "none" else "keep"
+        val oldEnd = if (ad == null) null else endsOf(ad)
 
         var c1 = color(if (ad == null) presets[0].first else str(ad, "color1"), 0xFF4F46E5.toInt())
         var c2 = color(if (ad == null) presets[0].second else str(ad, "color2"), 0xFF7C3AED.toInt())
         var active = ad?.optBoolean("active", true) ?: true
-        var bmp: Bitmap? = if (oldUrl.isEmpty()) null else images[oldUrl]
-        var pendingB64: String? = null
-        var removeImage = false
 
         val oldLink = if (ad == null) "" else str(ad, "link")
         var linkMode = when {
@@ -854,11 +923,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
         box.addView(t("Aperçu en direct, tel qu'il s'affichera dans KOUNADIA.", 13f, Ui.TEXT2))
 
         val previewHolder = FrameLayout(this)
-        val ph = LinearLayout.LayoutParams(KM, dp(100))
+        val ph = LinearLayout.LayoutParams(KM, KW)
         ph.setMargins(0, dp(14), 0, dp(4))
         box.addView(previewHolder, ph)
 
-        label(box, "Titre (60 caractères max.)")
+        label(box, "Titre (affiché seulement si la pub n'a pas de photo)")
         val title = field(box, "Ex. : Dépôt 1xBet en 2 minutes", if (ad == null) "" else str(ad, "title"), 60)
         label(box, "Texte (160 caractères max.)")
         val text = field(box, "Ex. : Code promo 99KND, service 7j/7", if (ad == null) "" else str(ad, "text"), 160, multi = true)
@@ -919,38 +988,90 @@ class KounadiaAdminActivity : AppCompatActivity() {
         refreshSwatches()
         box.addView(swatches)
 
-        label(box, "Photo (facultatif)")
-        box.addView(t("Format large conseillé (environ 1080 × 300). Un voile sombre garde le texte lisible.", 12f, Ui.TEXT2))
-        val photoRow = LinearLayout(this)
-        photoRow.orientation = LinearLayout.HORIZONTAL
-        photoRow.setPadding(0, dp(8), 0, 0)
-        val removeBtn = smallButton("Retirer la photo", Ui.ERROR) {
-            bmp = null
-            pendingB64 = null
-            removeImage = true
-            refreshPreview()
-        }
-        photoRow.addView(
-            smallButton("Choisir une photo", Ui.PRIMARY) {
-                onPicked = { b64, b ->
-                    pendingB64 = b64
-                    bmp = b
-                    removeImage = false
+        label(box, "Pages photo (5 max.)")
+        box.addView(t("Une photo par page, recadrée au format de la carte (2:1, idéal 1080 × 540). Les pages défilent du bas vers le haut ; le bouton apparaît sur la dernière page.", 12f, Ui.TEXT2))
+        val strip = LinearLayout(this)
+        strip.orientation = LinearLayout.HORIZONTAL
+        val stripScroll = android.widget.HorizontalScrollView(this)
+        stripScroll.isHorizontalScrollBarEnabled = false
+        stripScroll.setPadding(0, dp(10), 0, 0)
+        stripScroll.addView(strip)
+        box.addView(stripScroll)
+        lateinit var refreshStrip: () -> Unit
+        val addBtn = smallButton("+  Ajouter une page", Ui.PRIMARY) {
+            if (pages.size >= 5) {
+                toast("5 pages maximum")
+                return@smallButton
+            }
+            onPicked = { b64, b ->
+                if (pages.size < 5) {
+                    pages.add(Pg(null, b64, b))
+                    previewPage = pages.size - 1
+                    refreshStrip()
                     refreshPreview()
                 }
-                picker.launch("image/*")
-            },
-            weightLp(0),
-        )
-        photoRow.addView(removeBtn, weightLp(8))
-        box.addView(photoRow)
+            }
+            picker.launch("image/*")
+        }
+        val addLp = LinearLayout.LayoutParams(KM, KW)
+        addLp.setMargins(0, dp(10), 0, 0)
+        box.addView(addBtn, addLp)
+        refreshStrip = {
+            strip.removeAllViews()
+            for ((i, p) in pages.withIndex()) {
+                val cell = FrameLayout(this)
+                cell.background = Ui.rounded(this, Ui.ELEVATED, 10, if (i == previewPage) Ui.PRIMARY else Ui.BORDER)
+                cell.setPadding(dp(2), dp(2), dp(2), dp(2))
+                val iv = ImageView(this)
+                iv.scaleType = ImageView.ScaleType.CENTER_CROP
+                if (p.bmp != null) iv.setImageBitmap(p.bmp)
+                cell.addView(iv, FrameLayout.LayoutParams(KM, KM))
+                val num = FrameLayout.LayoutParams(KW, KW, Gravity.START or Gravity.BOTTOM)
+                num.setMargins(dp(4), 0, 0, dp(4))
+                cell.addView(chip("${i + 1}/${pages.size}", 10f), num)
+                val x = t("✕", 13f, Color.WHITE, true)
+                x.gravity = Gravity.CENTER
+                x.background = Ui.circle(Color.argb(200, 220, 38, 38))
+                val xl = FrameLayout.LayoutParams(dp(24), dp(24), Gravity.END or Gravity.TOP)
+                xl.setMargins(0, dp(3), dp(3), 0)
+                x.setOnClickListener {
+                    pages.removeAt(i)
+                    previewPage = previewPage.coerceAtMost(maxOf(0, pages.size - 1))
+                    refreshStrip()
+                    refreshPreview()
+                }
+                cell.addView(x, xl)
+                cell.setOnClickListener {
+                    previewPage = i
+                    refreshStrip()
+                    refreshPreview()
+                }
+                val lp = LinearLayout.LayoutParams(dp(112), dp(56) + dp(4))
+                lp.setMargins(0, 0, dp(8), 0)
+                strip.addView(cell, lp)
+            }
+            stripScroll.visibility = if (pages.isEmpty()) View.GONE else View.VISIBLE
+            addBtn.text = if (pages.size >= 5) "5 pages maximum" else "+  Ajouter une page (${pages.size}/5)"
+        }
+        refreshStrip()
 
-        label(box, "Ordre d'affichage")
+        label(box, "Durée de diffusion")
+        val endOptions = ArrayList<Pair<String, String>>()
+        if (oldEnd != null) endOptions.add("keep" to "Jusqu'au ${dayLabel(oldEnd).take(5)}")
+        endOptions.addAll(listOf("7" to "7 j", "30" to "30 j", "none" to "Illimitée"))
+        lateinit var refreshEnd: () -> Unit
+        refreshEnd = chipRow(box, endOptions, { endMode }) {
+            endMode = it
+            refreshEnd()
+        }
+        box.addView(t("À la fin, la pub et ses photos sont supprimées automatiquement.", 12f, Ui.TEXT2).also { it.setPadding(0, dp(6), 0, 0) })
+
         val position = field(
             box, "1 = en premier",
             (if (ad == null) ads.length() + 1 else ad.optInt("position", 1)).toString(), 3,
             type = InputType.TYPE_CLASS_NUMBER,
         )
+        position.visibility = View.GONE
 
         label(box, "État")
         lateinit var refreshActive: () -> Unit
@@ -976,13 +1097,20 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
 
         refreshPreview = {
-            removeBtn.visibility = if (bmp != null) View.VISIBLE else View.GONE
             previewHolder.removeAllViews()
+            val pg = pages.getOrNull(previewPage)
             val p = adPreview(
                 title.text.toString().trim(), text.text.toString().trim(), cta.text.toString().trim(),
-                currentLink().isNotEmpty(), c1, c2, bmp,
+                currentLink().isNotEmpty(), c1, c2, pg?.bmp, pages.size, previewPage,
             )
-            p.layoutParams = FrameLayout.LayoutParams(KM, KM)
+            p.setOnClickListener {
+                if (pages.size > 1) {
+                    previewPage = (previewPage + 1) % pages.size
+                    refreshStrip()
+                    refreshPreview()
+                }
+            }
+            p.layoutParams = FrameLayout.LayoutParams(KM, KW)
             if (!active) p.alpha = 0.6f
             previewHolder.addView(p)
         }
@@ -994,8 +1122,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 val ttl = title.text.toString().trim()
                 val link = currentLink()
                 status.text = ""
-                if (ttl.isEmpty()) {
-                    status.text = "Le titre est obligatoire."
+                if (ttl.isEmpty() && pages.isEmpty()) {
+                    status.text = "Ajoute au moins une photo, ou un titre."
                     return@button
                 }
                 if (linkMode == "wa" && link.isEmpty()) {
@@ -1007,7 +1135,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                     return@button
                 }
                 val body = JSONObject()
-                    .put("title", ttl)
+                    .put("title", ttl.ifEmpty { "Publicité" })
                     .put("text", text.text.toString().trim())
                     .put("cta", cta.text.toString().trim())
                     .put("link", link)
@@ -1025,13 +1153,28 @@ class KounadiaAdminActivity : AppCompatActivity() {
                         } else {
                             api("PATCH", "/admin/kounadia/ads/$id", body)
                         }
-                        val b64 = pendingB64
-                        if (b64 != null && id.isNotEmpty()) {
-                            status.text = "Envoi de la photo…"
-                            api("POST", "/admin/kounadia/ads/$id/image", JSONObject().put("base64", b64).put("contentType", "image/jpeg"))
-                        } else if (removeImage && oldUrl.isNotEmpty() && id.isNotEmpty()) {
-                            api("DELETE", "/admin/kounadia/ads/$id/image")
+                        if (id.isEmpty()) throw IllegalStateException("Publicité non créée, réessaie.")
+                        val urls = JSONArray()
+                        for ((i, p) in pages.withIndex()) {
+                            if (p.url != null) {
+                                urls.put(p.url)
+                            } else if (p.b64 != null) {
+                                status.text = "Envoi de la page ${i + 1}/${pages.size}…"
+                                val r = JSONObject(api("POST", "/admin/kounadia/ads/$id/pages", JSONObject().put("base64", p.b64).put("contentType", "image/jpeg")))
+                                val u = str(r, "url")
+                                if (u.isNotEmpty()) {
+                                    urls.put(u)
+                                    if (p.bmp != null) images[u] = p.bmp
+                                }
+                            }
                         }
+                        val body2 = JSONObject().put("pages", urls)
+                        when (endMode) {
+                            "7" -> body2.put("endsAt", isoUtc(Date(System.currentTimeMillis() + 7L * 86400000)))
+                            "30" -> body2.put("endsAt", isoUtc(Date(System.currentTimeMillis() + 30L * 86400000)))
+                            "none" -> body2.put("endsAt", JSONObject.NULL)
+                        }
+                        api("PUT", "/admin/kounadia/ads/$id/pages", body2)
                         dialog.dismiss()
                         toast("Publicité enregistrée. Visible dans l'application sous 15 min.")
                         reloadAds()
@@ -1075,5 +1218,16 @@ private class KndDailyChart(context: Context, private val labels: List<String>, 
         canvas.drawText(labels.first(), 0f, height - 4 * d, txt)
         txt.textAlign = Paint.Align.RIGHT
         canvas.drawText(labels.last(), width.toFloat(), height - 4 * d, txt)
+    }
+}
+
+/** Cadre au format de la carte publicitaire (largeur = 2 × hauteur). */
+private class RatioFrame(context: Context) : FrameLayout(context) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        super.onMeasure(
+            MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(w / 2, MeasureSpec.EXACTLY),
+        )
     }
 }
