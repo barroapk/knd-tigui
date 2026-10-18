@@ -61,6 +61,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private var days = 7
     private var stats: JSONObject? = null
     private var biz: JSONObject? = null
+    private var yearly: JSONObject? = null
     private var ads = JSONArray()
     private var loading = false
     private var error = ""
@@ -185,7 +186,16 @@ class KounadiaAdminActivity : AppCompatActivity() {
         scope.launch {
             try {
                 withContext(Dispatchers.IO) { ApiClient.warmUp(ConfigStorage.getApiBaseUrl(this@KounadiaAdminActivity)) }
-                stats = unwrapObj(api("GET", "/admin/kounadia/stats?days=$days"))
+                stats = try {
+                    unwrapObj(api("GET", "/admin/kounadia/stats2?days=$days"))
+                } catch (e: Exception) {
+                    unwrapObj(api("GET", "/admin/kounadia/stats?days=${if (days == 0) 90 else days}"))
+                }
+                yearly = try {
+                    unwrapObj(api("GET", "/admin/kounadia/yearly"))
+                } catch (e: Exception) {
+                    null
+                }
                 biz = try {
                     unwrapObj(api("GET", "/admin/kounadia/business"))
                 } catch (e: Exception) {
@@ -381,7 +391,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val chips = LinearLayout(this)
         chips.orientation = LinearLayout.HORIZONTAL
         chips.setPadding(0, dp(16), 0, dp(4))
-        for ((d, label) in listOf(1 to "24 h", 7 to "7 jours", 30 to "30 jours", 90 to "90 jours")) {
+        for ((d, label) in listOf(1 to "24 h", 7 to "7 j", 30 to "30 j", 90 to "90 j", 0 to "Tous")) {
             val on = d == days
             val c = t(label, 13f, if (on) Color.WHITE else Ui.TEXT2, true)
             c.gravity = Gravity.CENTER
@@ -411,6 +421,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val s = stats
         biz?.let { renderBusiness(it) }
         if (s != null) renderStats(s)
+        yearly?.let { renderYearly(it) }
         renderAds(s)
     }
 
@@ -493,7 +504,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
     }
 
     private fun renderStats(s: JSONObject) {
-        val period = if (days == 1) "dernières 24 h" else "$days derniers jours"
+        val period = when (days) {
+            0 -> "depuis le début"
+            1 -> "dernières 24 h"
+            else -> "$days derniers jours"
+        }
         content.addView(
             pair(
                 kpi("Utilisateurs", n(s.optInt("users")), period, Ui.TEXT),
@@ -555,6 +570,47 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- bilan annuel ----------
+
+    private fun renderYearly(y: JSONObject) {
+        val arr = y.optJSONArray("years") ?: return
+        if (arr.length() == 0) return
+        sectionTitle("Bilan par année")
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val c = card()
+            val head = LinearLayout(this)
+            head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.addView(t(o.optInt("year").toString(), 20f, Ui.TEXT, true), LinearLayout.LayoutParams(0, KW, 1f))
+            head.addView(t(f(o.optInt("net")) + " net", 15f, Ui.SUCCESS, true))
+            c.addView(head)
+            val gross = o.optInt("gross")
+            val fee = o.optInt("fee")
+            val rate = if (gross > 0) String.format(Locale.FRANCE, "%.1f %%", fee * 100.0 / gross) else "–"
+            val lines = listOf(
+                "Nouveaux utilisateurs" to n(o.optInt("newUsers")),
+                "Utilisateurs par jour (moyenne)" to n(o.optInt("avgUsers")),
+                "Record d'utilisateurs en un jour" to n(o.optInt("peak")),
+                "Jours d'activité" to n(o.optInt("activeDays")),
+                "Actions dans l'application" to n(o.optInt("events")),
+                "Comptes créés" to n(o.optInt("accounts")),
+                "Abonnements payés" to n(o.optInt("payments")),
+                "Chiffre d'affaires brut" to f(gross),
+                "Frais MoneyFusion" to "${f(fee)} ($rate)",
+            )
+            for ((k, v) in lines) {
+                val row = LinearLayout(this)
+                row.orientation = LinearLayout.HORIZONTAL
+                row.setPadding(0, dp(7), 0, 0)
+                row.addView(t(k, 13f, Ui.TEXT2), LinearLayout.LayoutParams(0, KW, 1f))
+                row.addView(t(v, 13f, Ui.TEXT, true))
+                c.addView(row)
+            }
+            content.addView(c)
+        }
+    }
+
     // ---------- chiffre d'affaires ----------
 
     private fun f(v: Int): String = n(v) + " F"
@@ -580,8 +636,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
             30 -> "30 derniers jours"
             else -> "depuis le début"
         }
-        val p = b.optJSONObject(key) ?: JSONObject()
-        sectionTitle("Chiffre d'affaires · $label")
+        val p = (if (days == 90) yearly?.optJSONObject("q90") else null) ?: b.optJSONObject(key) ?: JSONObject()
+        sectionTitle("Chiffre d'affaires · " + if (days == 90 && yearly?.optJSONObject("q90") != null) "90 derniers jours" else label)
         content.addView(
             pair(
                 kpi("Encaissé (net)", f(p.optInt("net")), "après frais MoneyFusion", Ui.SUCCESS),
