@@ -625,6 +625,38 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
     }
 
+    /** Crée un code de réinitialisation (30 min) et propose de l'envoyer sur le WhatsApp du compte. */
+    private fun resetCode(name: String, phone: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Réinitialiser le mot de passe ?")
+            .setMessage("Un code à 6 chiffres, valable 30 minutes, sera créé pour $name (+$phone). Envoie-le uniquement sur le WhatsApp de ce numéro.")
+            .setNegativeButton("Annuler", null)
+            .setPositiveButton("Créer le code") { _, _ ->
+                scope.launch {
+                    try {
+                        val r = unwrapObj(api("POST", "/admin/kounadia/reset-code", JSONObject().put("phone", phone)))
+                        val code = str(r, "code")
+                        val msg = "Bonjour $name 👋\nTon code KOUNADIA pour changer ton mot de passe : $code\nIl est valable 30 minutes. Dans l'application : Mon compte › Mot de passe oublié ?\nNe partage ce code avec personne.\n— L'équipe KOUNADIA"
+                        AlertDialog.Builder(this@KounadiaAdminActivity)
+                            .setTitle("Code : $code")
+                            .setMessage("Valable 30 minutes. Envoie-le sur le WhatsApp de +$phone.")
+                            .setNegativeButton("Fermer", null)
+                            .setPositiveButton("Envoyer sur WhatsApp") { _, _ ->
+                                try {
+                                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=" + URLEncoder.encode(msg, "UTF-8").replace("+", "%20"))))
+                                } catch (e: Exception) {
+                                    toast("WhatsApp introuvable")
+                                }
+                            }
+                            .show()
+                    } catch (e: Exception) {
+                        toast(e.message ?: "Erreur réseau")
+                    }
+                }
+            }
+            .show()
+    }
+
     private fun parseIso(v: String): Date? {
         if (v.length < 19) return null
         return try {
@@ -754,6 +786,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                     toast("Appel impossible")
                 }
             }, weightLp(8))
+            actions.addView(smallButton("Mot de passe", Ui.WARNING) { resetCode(name, phone) }, weightLp(8))
             c.addView(actions)
             content.addView(c)
         }
