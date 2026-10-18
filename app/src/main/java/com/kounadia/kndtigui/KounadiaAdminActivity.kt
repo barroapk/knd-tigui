@@ -1342,6 +1342,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val webBox = LinearLayout(this)
         webBox.orientation = LinearLayout.VERTICAL
         lateinit var refreshPreview: () -> Unit
+        lateinit var refreshStrip: () -> Unit
         lateinit var refreshMode: () -> Unit
         refreshMode = chipRow(box, listOf("wa" to "WhatsApp", "web" to "Site web", "none" to "Aucun"), { linkMode }) {
             linkMode = it
@@ -1402,7 +1403,6 @@ class KounadiaAdminActivity : AppCompatActivity() {
         stripScroll.setPadding(0, dp(10), 0, 0)
         stripScroll.addView(strip)
         box.addView(stripScroll)
-        lateinit var refreshStrip: () -> Unit
         fun editTextPage(i: Int) {
             val pg = pages.getOrNull(i) ?: return
             val form = LinearLayout(this)
