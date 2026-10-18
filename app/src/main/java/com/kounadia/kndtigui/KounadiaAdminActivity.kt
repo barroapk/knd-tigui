@@ -1,6 +1,8 @@
 package com.kounadia.kndtigui
 
 import android.content.Context
+import android.content.Intent
+import android.view.inputmethod.EditorInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -62,6 +64,26 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private var stats: JSONObject? = null
     private var biz: JSONObject? = null
     private var yearly: JSONObject? = null
+    private var admin: JSONObject? = null
+    private var tab = 0
+    private var subs = JSONArray()
+    private var subsMode = "active"
+    private var subsQuery = ""
+    private var subsLoading = false
+    private var subsLoaded = false
+    private var csvPending: String? = null
+    private val csvSaver = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
+        val csv = csvPending
+        csvPending = null
+        if (uri != null && csv != null) {
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(("\uFEFF" + csv).toByteArray(Charsets.UTF_8)) }
+                toast("Export enregistré")
+            } catch (e: Exception) {
+                toast("Enregistrement impossible")
+            }
+        }
+    }
     private var ads = JSONArray()
     private var loading = false
     private var error = ""
@@ -196,6 +218,12 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     null
                 }
+                admin = try {
+                    unwrapObj(api("GET", "/admin/kounadia/overview?days=$days"))
+                } catch (e: Exception) {
+                    null
+                }
+                if (tab == 3) subsLoaded = false
                 biz = try {
                     unwrapObj(api("GET", "/admin/kounadia/business"))
                 } catch (e: Exception) {
@@ -378,7 +406,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
         col.addView(t("KOUNADIA", 24f, Ui.TEXT, true))
-        col.addView(t(if (loading) "Chargement…" else "Statistiques et publicités de l'application", 13f, Ui.TEXT2))
+        col.addView(t(if (loading) "Mise à jour…" else "Administration de l'application", 13f, Ui.TEXT2))
         top.addView(col, LinearLayout.LayoutParams(0, KW, 1f))
         val refresh = ImageView(this)
         refresh.setImageResource(R.drawable.ic_refresh)
@@ -387,6 +415,29 @@ class KounadiaAdminActivity : AppCompatActivity() {
         Ui.pressable(refresh) { loadAll() }
         top.addView(refresh, LinearLayout.LayoutParams(dp(44), dp(44)))
         content.addView(top)
+
+        val tabsScroll = android.widget.HorizontalScrollView(this)
+        tabsScroll.isHorizontalScrollBarEnabled = false
+        val tabsRow = LinearLayout(this)
+        tabsRow.orientation = LinearLayout.HORIZONTAL
+        tabsRow.setPadding(0, dp(16), 0, 0)
+        for ((i, label) in listOf("Vue d'ensemble", "Revenus", "Utilisateurs", "Abonnés", "Publicités").withIndex()) {
+            val on = i == tab
+            val c = t(label, 13.5f, if (on) Color.WHITE else Ui.TEXT2, true)
+            c.setPadding(dp(16), dp(10), dp(16), dp(10))
+            c.background = Ui.rounded(this, if (on) Ui.PRIMARY else Ui.SURFACE, 20, if (on) null else Ui.BORDER)
+            val lp = LinearLayout.LayoutParams(KW, KW)
+            lp.setMargins(0, 0, dp(8), 0)
+            c.setOnClickListener {
+                if (tab != i) {
+                    tab = i
+                    if (i == 3 && !subsLoaded) loadSubs() else render()
+                }
+            }
+            tabsRow.addView(c, lp)
+        }
+        tabsScroll.addView(tabsRow)
+        content.addView(tabsScroll)
 
         val chips = LinearLayout(this)
         chips.orientation = LinearLayout.HORIZONTAL
@@ -407,7 +458,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             }
             chips.addView(c, lp)
         }
-        content.addView(chips)
+        if (tab <= 2) content.addView(chips)
 
         if (error.isNotEmpty()) {
             val e = card()
@@ -419,10 +470,293 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
 
         val s = stats
-        biz?.let { renderBusiness(it) }
-        if (s != null) renderStats(s)
-        yearly?.let { renderYearly(it) }
-        renderAds(s)
+        when (tab) {
+            0 -> renderOverview()
+            1 -> {
+                biz?.let { renderBusiness(it) }
+                renderRevenueChart()
+                renderExport()
+                yearly?.let { renderYearly(it) }
+            }
+            2 -> if (s != null) renderStats(s) else if (loading) loadingCard()
+            3 -> renderSubs()
+            else -> renderAds(s)
+        }
+    }
+
+    private fun loadingCard() {
+        val c = card()
+        c.addView(t("Chargement…", 13f, Ui.TEXT2))
+        content.addView(c)
+    }
+
+    private fun periodLabel(): String = when (days) {
+        0 -> "depuis le début"
+        1 -> "aujourd'hui"
+        else -> "$days derniers jours"
+    }
+
+    // ---------- vue d'ensemble ----------
+
+    /** Indicateur + évolution par rapport à la période précédente. */
+    private fun kpiTrend(label: String, value: String, cur: Double, prev: Double?, accent: Int, onClick: (() -> Unit)? = null): View {
+        val (txt, col) = when {
+            prev == null -> Pair(periodLabel(), Ui.TEXT2)
+            prev == 0.0 && cur == 0.0 -> Pair("= stable", Ui.TEXT2)
+            prev == 0.0 -> Pair("▲ nouveau", Ui.SUCCESS)
+            else -> {
+                val pct = (cur - prev) * 100.0 / prev
+                when {
+                    pct >= 0.5 -> Pair(String.format(Locale.FRANCE, "▲ %.0f %% vs avant", pct), Ui.SUCCESS)
+                    pct <= -0.5 -> Pair(String.format(Locale.FRANCE, "▼ %.0f %% vs avant", -pct), Ui.ERROR)
+                    else -> Pair("= stable", Ui.TEXT2)
+                }
+            }
+        }
+        val box = kpi(label, value, txt, accent) as LinearLayout
+        (box.getChildAt(box.childCount - 1) as TextView).setTextColor(col)
+        if (onClick != null) Ui.pressable(box, onClick)
+        return box
+    }
+
+    private fun renderOverview() {
+        val a = admin
+        val b = biz
+        if (a == null && b == null) {
+            if (loading) loadingCard()
+            return
+        }
+        val cur = a?.optJSONObject("cur") ?: JSONObject()
+        val prev = a?.optJSONObject("prev")
+        fun pv(k: String): Double? = prev?.optDouble(k, 0.0)
+        sectionTitle("Vue d'ensemble · ${periodLabel()}")
+        content.addView(
+            pair(
+                kpiTrend("Chiffre d'affaires", f(cur.optInt("net")), cur.optDouble("net", 0.0), pv("net"), Ui.SUCCESS) { tab = 1; render() },
+                kpiTrend("Paiements", n(cur.optInt("payments")), cur.optDouble("payments", 0.0), pv("payments"), Ui.TEXT) { tab = 1; render() },
+            ),
+        )
+        content.addView(
+            pair(
+                kpiTrend("Utilisateurs / jour", String.format(Locale.FRANCE, "%.1f", cur.optDouble("avgDaily", 0.0)).removeSuffix(",0"), cur.optDouble("avgDaily", 0.0), pv("avgDaily"), Ui.PRIMARY) { tab = 2; render() },
+                kpiTrend("Nouveaux", n(cur.optInt("newUsers")), cur.optDouble("newUsers", 0.0), pv("newUsers"), Ui.WARNING) { tab = 2; render() },
+            ),
+        )
+        if (b != null) {
+            content.addView(
+                pair(
+                    kpiTrend("Abonnés actifs", n(b.optInt("active")), 0.0, null, Ui.SUCCESS) { openSubs("active") }.also {
+                        ((it as LinearLayout).getChildAt(it.childCount - 1) as TextView).text = "en ce moment · voir la liste"
+                    },
+                    kpiTrend("À relancer", n(b.optInt("expiring")), 0.0, null, Ui.WARNING) { openSubs("expiring") }.also {
+                        ((it as LinearLayout).getChildAt(it.childCount - 1) as TextView).text = "expirent sous 3 jours"
+                    },
+                ),
+            )
+            content.addView(
+                pair(
+                    kpiTrend("Comptes créés", n(cur.optInt("accounts")), cur.optDouble("accounts", 0.0), pv("accounts"), Ui.TEXT),
+                    kpiTrend("Actions", n(cur.optInt("events")), cur.optDouble("events", 0.0), pv("events"), Ui.TEXT2),
+                ),
+            )
+        }
+        renderRevenueChart()
+    }
+
+    private fun renderRevenueChart() {
+        val arr = admin?.optJSONArray("revenue") ?: return
+        if (arr.length() == 0) return
+        val monthly = admin?.optBoolean("monthly") == true
+        sectionTitle(if (monthly) "Chiffre d'affaires net par mois" else "Chiffre d'affaires net par jour")
+        val c = card()
+        val labels = ArrayList<String>()
+        val values = ArrayList<Int>()
+        var total = 0
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            labels.add(str(o, "label"))
+            values.add(o.optInt("net"))
+            total += o.optInt("net")
+        }
+        c.addView(t("Total sur la courbe : ${f(total)}", 12.5f, Ui.TEXT2, true))
+        c.addView(KndDailyChart(this, labels, values, " F"), LinearLayout.LayoutParams(KM, dp(150)))
+        content.addView(c)
+    }
+
+    private fun renderExport() {
+        val b = Ui.button(this, "Exporter tous les paiements (Excel / CSV)", "secondary") {
+            scope.launch {
+                try {
+                    val r = unwrapObj(api("GET", "/admin/kounadia/payments-csv"))
+                    csvPending = str(r, "csv")
+                    val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+                    csvSaver.launch("kounadia-paiements-$day.csv")
+                } catch (e: Exception) {
+                    toast(e.message ?: "Erreur réseau")
+                }
+            }
+        }
+        val lp = LinearLayout.LayoutParams(KM, KW)
+        lp.setMargins(0, dp(12), 0, 0)
+        content.addView(b, lp)
+    }
+
+    // ---------- abonnés ----------
+
+    private fun openSubs(mode: String) {
+        tab = 3
+        subsMode = mode
+        loadSubs()
+    }
+
+    private fun loadSubs() {
+        subsLoading = true
+        render()
+        scope.launch {
+            try {
+                val q = URLEncoder.encode(subsQuery, "UTF-8")
+                subs = unwrapArr(api("GET", "/admin/kounadia/subscribers?mode=$subsMode&q=$q"))
+                subsLoaded = true
+            } catch (e: Exception) {
+                toast(e.message ?: "Erreur réseau")
+            }
+            subsLoading = false
+            render()
+        }
+    }
+
+    private fun parseIso(v: String): Date? {
+        if (v.length < 19) return null
+        return try {
+            val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            f.timeZone = TimeZone.getTimeZone("UTC")
+            f.parse(v.take(19))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun renderSubs() {
+        sectionTitle("Abonnés")
+        val search = LinearLayout(this)
+        search.orientation = LinearLayout.HORIZONTAL
+        search.gravity = Gravity.CENTER_VERTICAL
+        val q = Ui.input(this, "Nom ou numéro")
+        q.setText(subsQuery)
+        q.isSingleLine = true
+        q.imeOptions = EditorInfo.IME_ACTION_SEARCH
+        val go = {
+            subsQuery = q.text.toString().trim()
+            loadSubs()
+        }
+        q.setOnEditorActionListener { _, id, _ ->
+            if (id == EditorInfo.IME_ACTION_SEARCH) {
+                go()
+                true
+            } else {
+                false
+            }
+        }
+        search.addView(q, LinearLayout.LayoutParams(0, KW, 1f))
+        val btn = smallButton("Chercher", Ui.PRIMARY) { go() }
+        val bl = LinearLayout.LayoutParams(KW, KW)
+        bl.setMargins(dp(8), 0, 0, 0)
+        search.addView(btn, bl)
+        content.addView(search)
+
+        val modes = LinearLayout(this)
+        modes.orientation = LinearLayout.HORIZONTAL
+        modes.setPadding(0, dp(10), 0, dp(4))
+        for ((key, label) in listOf("active" to "Actifs", "expiring" to "À relancer", "expired" to "Expirés", "all" to "Tous")) {
+            val on = key == subsMode
+            val c = t(label, 12.5f, if (on) Color.WHITE else Ui.TEXT2, true)
+            c.gravity = Gravity.CENTER
+            c.setPadding(0, dp(9), 0, dp(9))
+            c.background = Ui.rounded(this, if (on) Ui.PRIMARY else Ui.SURFACE, 12, if (on) null else Ui.BORDER)
+            c.setOnClickListener {
+                if (subsMode != key) {
+                    subsMode = key
+                    loadSubs()
+                }
+            }
+            modes.addView(c, weightLp(if (key == "active") 0 else 6))
+        }
+        content.addView(modes)
+
+        if (subsLoading && subs.length() == 0) {
+            loadingCard()
+            return
+        }
+        if (subs.length() == 0) {
+            val c = card()
+            c.addView(t(if (subsQuery.isEmpty()) "Personne dans cette liste pour le moment." else "Aucun résultat pour « $subsQuery ».", 13f, Ui.TEXT2))
+            content.addView(c)
+            return
+        }
+        content.addView(t("${subs.length()} personne(s)" + if (subs.length() >= 200) " (200 premières)" else "", 12f, Ui.TEXT2).also { it.setPadding(dp(4), dp(8), 0, dp(8)) })
+        val now = System.currentTimeMillis()
+        val df = SimpleDateFormat("dd/MM/yyyy", Locale.FRANCE)
+        for (i in 0 until subs.length()) {
+            val o = subs.getJSONObject(i)
+            val name = str(o, "username")
+            val phone = str(o, "phone").filter { it.isDigit() }
+            val until = parseIso(str(o, "premium_until"))
+            val c = card()
+            val head = LinearLayout(this)
+            head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            val left = LinearLayout(this)
+            left.orientation = LinearLayout.VERTICAL
+            left.addView(t(name, 15.5f, Ui.TEXT, true))
+            left.addView(t("+$phone", 12.5f, Ui.TEXT2))
+            head.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
+            val (status, sc) = when {
+                until == null -> Pair("Jamais abonné", Ui.TEXT2)
+                until.time <= now -> Pair("Expiré", Ui.ERROR)
+                until.time - now < 3L * 86400000 -> Pair("Expire bientôt", Ui.WARNING)
+                else -> Pair("Premium", Ui.SUCCESS)
+            }
+            head.addView(Ui.pill(this, status, sc))
+            c.addView(head)
+            val detail = when {
+                until == null -> "Compte créé, aucun abonnement"
+                until.time <= now -> "Terminé le ${df.format(until)}"
+                else -> {
+                    val left2 = ((until.time - now) / 86400000L).toInt()
+                    "Jusqu'au ${df.format(until)} · " + if (left2 <= 0) "dernier jour" else "encore $left2 j"
+                }
+            }
+            c.addView(t(detail, 13f, Ui.TEXT).also { it.setPadding(0, dp(8), 0, 0) })
+            val paid = o.optInt("paid")
+            val np = o.optInt("payments")
+            if (np > 0) c.addView(t("$np paiement(s) · ${f(paid)} au total · dernière offre : ${planName(str(o, "plan"))}", 12f, Ui.TEXT2).also { it.setPadding(0, dp(2), 0, 0) })
+
+            val actions = LinearLayout(this)
+            actions.orientation = LinearLayout.HORIZONTAL
+            actions.setPadding(0, dp(12), 0, 0)
+            val msg = when {
+                until == null -> "Bonjour $name 👋\nMerci d'avoir créé ton compte KOUNADIA. Avec Premium, tu débloques les prédictions, Coup sûr et les coupons. Tu peux t'abonner dans l'application : Paramètres › Mon compte.\n— L'équipe KOUNADIA"
+                until.time <= now -> "Bonjour $name 👋\nTon abonnement KOUNADIA Premium est terminé depuis le ${df.format(until)}. Tu peux le réactiver quand tu veux dans l'application : Paramètres › Mon compte.\nMerci pour ta confiance !\n— L'équipe KOUNADIA"
+                until.time - now < 3L * 86400000 -> "Bonjour $name 👋\nTon abonnement KOUNADIA Premium se termine le ${df.format(until)}. Pour continuer sans interruption, tu peux le renouveler dans l'application : Paramètres › Mon compte.\nMerci pour ta confiance !\n— L'équipe KOUNADIA"
+                else -> "Bonjour $name 👋\nMerci d'utiliser KOUNADIA Premium ! Si tu as une question ou une idée, réponds simplement à ce message.\n— L'équipe KOUNADIA"
+            }
+            actions.addView(smallButton("WhatsApp", Ui.SUCCESS) {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=" + URLEncoder.encode(msg, "UTF-8").replace("+", "%20"))))
+                } catch (e: Exception) {
+                    toast("WhatsApp introuvable")
+                }
+            }, weightLp(0))
+            actions.addView(smallButton("Appeler", Ui.TEXT) {
+                try {
+                    startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:+$phone")))
+                } catch (e: Exception) {
+                    toast("Appel impossible")
+                }
+            }, weightLp(8))
+            c.addView(actions)
+            content.addView(c)
+        }
     }
 
     private fun kpi(label: String, value: String, sub: String, accent: Int): View {
@@ -1316,7 +1650,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
 }
 
 /** Histogramme simple des utilisateurs par jour. */
-private class KndDailyChart(context: Context, private val labels: List<String>, private val values: List<Int>) : View(context) {
+private class KndDailyChart(context: Context, private val labels: List<String>, private val values: List<Int>, private val unit: String = " / jour") : View(context) {
     private val d = context.resources.displayMetrics.density
     private val strong = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.PRIMARY }
     private val soft = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.withAlpha(Ui.PRIMARY, 0x66) }
@@ -1340,7 +1674,7 @@ private class KndDailyChart(context: Context, private val labels: List<String>, 
             canvas.drawRoundRect(RectF(x, topPad + h - bh, x + bw, topPad + h), 4 * d, 4 * d, if (i == values.size - 1) strong else soft)
         }
         txt.textAlign = Paint.Align.LEFT
-        canvas.drawText("max $max / jour", 0f, 11 * d, txt)
+        canvas.drawText("max " + String.format(Locale.FRANCE, "%,d", max).replace('\u202F', ' ').replace('\u00A0', ' ') + unit, 0f, 11 * d, txt)
         canvas.drawText(labels.first(), 0f, height - 4 * d, txt)
         txt.textAlign = Paint.Align.RIGHT
         canvas.drawText(labels.last(), width.toFloat(), height - 4 * d, txt)
