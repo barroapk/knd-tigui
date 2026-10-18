@@ -57,6 +57,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private lateinit var content: LinearLayout
     private var days = 7
     private var stats: JSONObject? = null
+    private var biz: JSONObject? = null
     private var ads = JSONArray()
     private var loading = false
     private var error = ""
@@ -182,6 +183,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
             try {
                 withContext(Dispatchers.IO) { ApiClient.warmUp(ConfigStorage.getApiBaseUrl(this@KounadiaAdminActivity)) }
                 stats = unwrapObj(api("GET", "/admin/kounadia/stats?days=$days"))
+                biz = try {
+                    unwrapObj(api("GET", "/admin/kounadia/business"))
+                } catch (e: Exception) {
+                    null
+                }
                 ads = unwrapArr(api("GET", "/admin/kounadia/ads"))
                 loadImages()
             } catch (e: Exception) {
@@ -335,6 +341,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
 
         val s = stats
+        biz?.let { renderBusiness(it) }
         if (s != null) renderStats(s)
         renderAds(s)
     }
@@ -476,6 +483,93 @@ class KounadiaAdminActivity : AppCompatActivity() {
         if (s.optInt("events") == 0) {
             val c = card()
             c.addView(t("Aucune donnée sur cette période. Les statistiques arrivent dès que des utilisateurs ouvrent la nouvelle version de l'application.", 13f, Ui.TEXT2))
+            content.addView(c)
+        }
+    }
+
+    // ---------- chiffre d'affaires ----------
+
+    private fun f(v: Int): String = n(v) + " F"
+
+    private fun planName(p: String): String = when (p) {
+        "day" -> "3 jours"
+        "week" -> "Semaine"
+        "month" -> "Mois"
+        "year" -> "Année"
+        else -> p
+    }
+
+    private fun renderBusiness(b: JSONObject) {
+        val key = when (days) {
+            1 -> "today"
+            7 -> "week"
+            30 -> "month"
+            else -> "all"
+        }
+        val label = when (days) {
+            1 -> "aujourd'hui"
+            7 -> "7 derniers jours"
+            30 -> "30 derniers jours"
+            else -> "depuis le début"
+        }
+        val p = b.optJSONObject(key) ?: JSONObject()
+        sectionTitle("Chiffre d'affaires · $label")
+        content.addView(
+            pair(
+                kpi("Encaissé (net)", f(p.optInt("net")), "après frais MoneyFusion", Ui.SUCCESS),
+                kpi("Paiements", n(p.optInt("n")), "abonnements payés", Ui.TEXT),
+            ),
+        )
+        val gross = p.optInt("gross")
+        val fee = p.optInt("fee")
+        val rate = if (gross > 0) String.format(Locale.FRANCE, "%.1f %%", fee * 100.0 / gross) else "–"
+        content.addView(
+            pair(
+                kpi("Brut", f(gross), "payé par les clients", Ui.PRIMARY),
+                kpi("Frais", f(fee), "soit $rate", Ui.WARNING),
+            ),
+        )
+        val users = b.optInt("users")
+        val payers = b.optInt("payers")
+        val conv = if (users > 0) String.format(Locale.FRANCE, "%.1f %%", payers * 100.0 / users) else "–"
+        content.addView(
+            pair(
+                kpi("Abonnés actifs", n(b.optInt("active")), "${n(b.optInt("expiring"))} expirent sous 3 j", Ui.SUCCESS),
+                kpi("Comptes", n(users), "+${n(b.optInt("newUsers7"))} cette semaine · conv. $conv", Ui.TEXT),
+            ),
+        )
+        val plans = b.optJSONArray("plans") ?: JSONArray()
+        if (plans.length() > 0) {
+            sectionTitle("Offres vendues · 30 jours")
+            val rows = ArrayList<Triple<String, Int, String>>()
+            for (i in 0 until plans.length()) {
+                val o = plans.getJSONObject(i)
+                rows.add(Triple(planName(str(o, "plan")), o.optInt("n"), f(o.optInt("gross"))))
+            }
+            content.addView(rankCard(rows))
+        }
+        val recent = b.optJSONArray("recent") ?: JSONArray()
+        if (recent.length() > 0) {
+            sectionTitle("Derniers paiements")
+            val c = card()
+            for (i in 0 until recent.length()) {
+                val o = recent.getJSONObject(i)
+                val line = LinearLayout(this)
+                line.orientation = LinearLayout.HORIZONTAL
+                line.setPadding(0, if (i == 0) 0 else dp(8), 0, 0)
+                val left = LinearLayout(this)
+                left.orientation = LinearLayout.VERTICAL
+                left.addView(t("${str(o, "username")} · ••${str(o, "phone4")}", 13.5f, Ui.TEXT, true))
+                left.addView(t("${planName(str(o, "plan"))} · ${str(o, "paid_at").take(16).replace("T", " ")}", 11.5f, Ui.TEXT2))
+                line.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
+                line.addView(t(f(o.optInt("amount")), 14f, Ui.SUCCESS, true))
+                c.addView(line)
+            }
+            content.addView(c)
+        }
+        if (b.optInt("pending") > 0) {
+            val c = card()
+            c.addView(t("${b.optInt("pending")} paiement(s) commencé(s) mais non finalisé(s) depuis 24 h.", 12.5f, Ui.TEXT2))
             content.addView(c)
         }
     }
