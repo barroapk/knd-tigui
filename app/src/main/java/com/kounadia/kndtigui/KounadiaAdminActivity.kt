@@ -214,15 +214,26 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
     }
 
-    private fun pagesOf(ad: JSONObject): List<String> {
-        val out = ArrayList<String>()
+    /** Pages d'une pub : photo (url) ou texte (titre + texte). */
+    private fun pagesOf(ad: JSONObject): List<AdPage> {
+        val out = ArrayList<AdPage>()
         val arr = ad.optJSONArray("pages")
         if (arr != null) for (i in 0 until arr.length()) {
-            val u = arr.optString(i, "")
-            if (u.startsWith("http")) out.add(u)
+            val o = arr.opt(i)
+            if (o is JSONObject) {
+                val ti = str(o, "title")
+                val tx = str(o, "text")
+                if (ti.isNotEmpty() || tx.isNotEmpty()) out.add(AdPage(null, ti, tx))
+            } else {
+                val u = arr.optString(i, "")
+                if (u.startsWith("http")) out.add(AdPage(u, "", ""))
+            }
         }
-        val img = str(ad, "image_url")
-        if (out.isEmpty() && img.startsWith("http")) out.add(img)
+        if (out.isEmpty()) {
+            val img = str(ad, "image_url")
+            if (img.startsWith("http")) out.add(AdPage(img, "", ""))
+            else if (str(ad, "title").isNotEmpty()) out.add(AdPage(null, str(ad, "title"), str(ad, "text")))
+        }
         return out.take(5)
     }
 
@@ -260,7 +271,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
 
     private fun loadImages() {
         val urls = LinkedHashSet<String>()
-        for (i in 0 until ads.length()) urls.addAll(pagesOf(ads.getJSONObject(i)))
+        for (i in 0 until ads.length()) urls.addAll(pagesOf(ads.getJSONObject(i)).mapNotNull { it.url })
         for (url in urls) {
             if (images.containsKey(url) || !imageLoading.add(url)) continue
             scope.launch {
@@ -667,10 +678,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val c = card()
 
         val pages = pagesOf(ad)
+        val first = pages.firstOrNull()
         val prev = adPreview(
-            str(ad, "title"), str(ad, "text"), str(ad, "cta"), str(ad, "link").isNotEmpty(),
+            first?.title ?: str(ad, "title"), first?.text ?: str(ad, "text"), str(ad, "cta"), str(ad, "link").isNotEmpty(),
             color(str(ad, "color1"), 0xFF4F46E5.toInt()), color(str(ad, "color2"), 0xFF7C3AED.toInt()),
-            pages.firstOrNull()?.let { images[it] }, pages.size,
+            first?.url?.let { images[it] }, pages.size, 0, first?.url != null,
         )
         if (!active) prev.alpha = 0.45f
         c.addView(prev)
@@ -762,7 +774,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         return c
     }
 
-    private fun adPreview(title: String, text: String, cta: String, hasLink: Boolean, c1: Int, c2: Int, bmp: Bitmap?, pageCount: Int = 0, page: Int = 0): FrameLayout {
+    private fun adPreview(title: String, text: String, cta: String, hasLink: Boolean, c1: Int, c2: Int, bmp: Bitmap?, pageCount: Int = 0, page: Int = 0, loadingPhoto: Boolean = false): FrameLayout {
         val f = RatioFrame(this)
         val g = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2))
         g.cornerRadius = dp(18).toFloat()
@@ -776,7 +788,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             iv.scaleType = ImageView.ScaleType.CENTER_CROP
             iv.setImageBitmap(bmp)
             f.addView(iv, FrameLayout.LayoutParams(KM, KM))
-        } else if (count > 0) {
+        } else if (loadingPhoto) {
             f.addView(t("Chargement de la photo…", 12f, Color.argb(200, 255, 255, 255)), FrameLayout.LayoutParams(KW, KW, Gravity.CENTER))
         } else {
             val b1 = View(this)
@@ -888,9 +900,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val (dialog, box) = Ui.bottomSheet(this)
         val adId = if (ad == null) "" else str(ad, "id")
         // Pages : URL déjà en ligne, ou photo locale (base64) à envoyer.
-        data class Pg(val url: String?, val b64: String?, val bmp: Bitmap?)
+        class Pg(val url: String?, val b64: String?, val bmp: Bitmap?, var title: String = "", var text: String = "") {
+            val photo: Boolean get() = url != null || b64 != null
+        }
         val pages = ArrayList<Pg>()
-        if (ad != null) for (u in pagesOf(ad)) pages.add(Pg(u, null, images[u]))
+        if (ad != null) for (p in pagesOf(ad)) pages.add(Pg(p.url, null, p.url?.let { images[it] }, p.title, p.text))
         var previewPage = 0
         var endMode = if (ad == null || endsOf(ad) == null) "none" else "keep"
         val oldEnd = if (ad == null) null else endsOf(ad)
@@ -927,10 +941,10 @@ class KounadiaAdminActivity : AppCompatActivity() {
         ph.setMargins(0, dp(14), 0, dp(4))
         box.addView(previewHolder, ph)
 
-        label(box, "Titre (affiché seulement si la pub n'a pas de photo)")
-        val title = field(box, "Ex. : Dépôt 1xBet en 2 minutes", if (ad == null) "" else str(ad, "title"), 60)
-        label(box, "Texte (160 caractères max.)")
-        val text = field(box, "Ex. : Code promo 99KND, service 7j/7", if (ad == null) "" else str(ad, "text"), 160, multi = true)
+        label(box, "Nom de la publicité (visible seulement dans Tigui)")
+        val title = field(box, "Ex. : Promo dépôt 1xBet", if (ad == null) "" else str(ad, "title"), 60)
+        val text = field(box, "", if (ad == null) "" else str(ad, "text"), 160)
+        text.visibility = View.GONE
 
         label(box, "Lien du bouton")
         val waBox = LinearLayout(this)
@@ -980,6 +994,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 c1 = color(p.first, c1)
                 c2 = color(p.second, c2)
                 refreshSwatches()
+                refreshStrip()
                 refreshPreview()
             }
             swatches.addView(v, lp)
@@ -988,8 +1003,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
         refreshSwatches()
         box.addView(swatches)
 
-        label(box, "Pages photo (5 max.)")
-        box.addView(t("Une photo par page, recadrée au format de la carte (2:1, idéal 1080 × 540). Les pages défilent du bas vers le haut ; le bouton apparaît sur la dernière page.", 12f, Ui.TEXT2))
+        label(box, "Pages (5 max.)")
+        box.addView(t("Chaque page est une photo (recadrée en 2:1, idéal 1080 × 540) ou un texte sur le fond de couleur. Les pages défilent du bas vers le haut ; le bouton apparaît sur la dernière page. Touche une page texte pour la modifier.", 12f, Ui.TEXT2))
         val strip = LinearLayout(this)
         strip.orientation = LinearLayout.HORIZONTAL
         val stripScroll = android.widget.HorizontalScrollView(this)
@@ -998,7 +1013,28 @@ class KounadiaAdminActivity : AppCompatActivity() {
         stripScroll.addView(strip)
         box.addView(stripScroll)
         lateinit var refreshStrip: () -> Unit
-        val addBtn = smallButton("+  Ajouter une page", Ui.PRIMARY) {
+        fun editTextPage(i: Int) {
+            val pg = pages.getOrNull(i) ?: return
+            val form = LinearLayout(this)
+            form.orientation = LinearLayout.VERTICAL
+            form.setPadding(dp(20), dp(8), dp(20), 0)
+            val ti = field(form, "Titre (60 max.)", pg.title, 60)
+            val tx = field(form, "Texte (160 max.)", pg.text, 160, multi = true)
+            AlertDialog.Builder(this)
+                .setTitle("Page ${i + 1} · texte")
+                .setView(form)
+                .setNegativeButton("Annuler", null)
+                .setPositiveButton("OK") { _, _ ->
+                    pg.title = ti.text.toString().trim()
+                    pg.text = tx.text.toString().trim()
+                    refreshStrip()
+                    refreshPreview()
+                }
+                .show()
+        }
+        val addRow = LinearLayout(this)
+        addRow.orientation = LinearLayout.HORIZONTAL
+        val addBtn = smallButton("+  Page photo", Ui.PRIMARY) {
             if (pages.size >= 5) {
                 toast("5 pages maximum")
                 return@smallButton
@@ -1013,19 +1049,44 @@ class KounadiaAdminActivity : AppCompatActivity() {
             }
             picker.launch("image/*")
         }
+        val addTextBtn = smallButton("+  Page texte", Ui.PRIMARY) {
+            if (pages.size >= 5) {
+                toast("5 pages maximum")
+                return@smallButton
+            }
+            pages.add(Pg(null, null, null))
+            previewPage = pages.size - 1
+            refreshStrip()
+            refreshPreview()
+            editTextPage(previewPage)
+        }
+        addRow.addView(addBtn, weightLp(0))
+        addRow.addView(addTextBtn, weightLp(8))
         val addLp = LinearLayout.LayoutParams(KM, KW)
         addLp.setMargins(0, dp(10), 0, 0)
-        box.addView(addBtn, addLp)
+        box.addView(addRow, addLp)
         refreshStrip = {
             strip.removeAllViews()
             for ((i, p) in pages.withIndex()) {
                 val cell = FrameLayout(this)
                 cell.background = Ui.rounded(this, Ui.ELEVATED, 10, if (i == previewPage) Ui.PRIMARY else Ui.BORDER)
                 cell.setPadding(dp(2), dp(2), dp(2), dp(2))
-                val iv = ImageView(this)
-                iv.scaleType = ImageView.ScaleType.CENTER_CROP
-                if (p.bmp != null) iv.setImageBitmap(p.bmp)
-                cell.addView(iv, FrameLayout.LayoutParams(KM, KM))
+                if (p.photo) {
+                    val iv = ImageView(this)
+                    iv.scaleType = ImageView.ScaleType.CENTER_CROP
+                    if (p.bmp != null) iv.setImageBitmap(p.bmp)
+                    cell.addView(iv, FrameLayout.LayoutParams(KM, KM))
+                } else {
+                    val g = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2))
+                    g.cornerRadius = dp(8).toFloat()
+                    val tv = t(p.title.ifEmpty { p.text.ifEmpty { "Texte…" } }, 10f, Color.WHITE, true)
+                    tv.maxLines = 2
+                    tv.ellipsize = TextUtils.TruncateAt.END
+                    tv.gravity = Gravity.CENTER
+                    tv.setPadding(dp(6), dp(4), dp(6), dp(14))
+                    tv.background = g
+                    cell.addView(tv, FrameLayout.LayoutParams(KM, KM))
+                }
                 val num = FrameLayout.LayoutParams(KW, KW, Gravity.START or Gravity.BOTTOM)
                 num.setMargins(dp(4), 0, 0, dp(4))
                 cell.addView(chip("${i + 1}/${pages.size}", 10f), num)
@@ -1045,13 +1106,15 @@ class KounadiaAdminActivity : AppCompatActivity() {
                     previewPage = i
                     refreshStrip()
                     refreshPreview()
+                    if (!p.photo) editTextPage(i)
                 }
                 val lp = LinearLayout.LayoutParams(dp(112), dp(56) + dp(4))
                 lp.setMargins(0, 0, dp(8), 0)
                 strip.addView(cell, lp)
             }
             stripScroll.visibility = if (pages.isEmpty()) View.GONE else View.VISIBLE
-            addBtn.text = if (pages.size >= 5) "5 pages maximum" else "+  Ajouter une page (${pages.size}/5)"
+            addBtn.text = if (pages.size >= 5) "5 pages max." else "+  Page photo"
+            addTextBtn.text = if (pages.size >= 5) "${pages.size}/5" else "+  Page texte (${pages.size}/5)"
         }
         refreshStrip()
 
@@ -1100,8 +1163,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
             previewHolder.removeAllViews()
             val pg = pages.getOrNull(previewPage)
             val p = adPreview(
-                title.text.toString().trim(), text.text.toString().trim(), cta.text.toString().trim(),
-                currentLink().isNotEmpty(), c1, c2, pg?.bmp, pages.size, previewPage,
+                pg?.title ?: "Ajoute une page", pg?.text ?: "Photo ou texte, 5 pages max.", cta.text.toString().trim(),
+                currentLink().isNotEmpty(), c1, c2, pg?.bmp, pages.size, previewPage, pg?.photo == true,
             )
             p.setOnClickListener {
                 if (pages.size > 1) {
@@ -1122,8 +1185,12 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 val ttl = title.text.toString().trim()
                 val link = currentLink()
                 status.text = ""
-                if (ttl.isEmpty() && pages.isEmpty()) {
-                    status.text = "Ajoute au moins une photo, ou un titre."
+                pages.removeAll { !it.photo && it.title.isEmpty() && it.text.isEmpty() }
+                if (pages.isEmpty()) {
+                    previewPage = 0
+                    refreshStrip()
+                    refreshPreview()
+                    status.text = "Ajoute au moins une page (photo ou texte)."
                     return@button
                 }
                 if (linkMode == "wa" && link.isEmpty()) {
@@ -1156,12 +1223,15 @@ class KounadiaAdminActivity : AppCompatActivity() {
                         if (id.isEmpty()) throw IllegalStateException("Publicité non créée, réessaie.")
                         val urls = JSONArray()
                         for ((i, p) in pages.withIndex()) {
-                            if (p.url != null) {
+                            if (!p.photo) {
+                                urls.put(JSONObject().put("title", p.title).put("text", p.text))
+                            } else if (p.url != null) {
                                 urls.put(p.url)
                             } else if (p.b64 != null) {
                                 status.text = "Envoi de la page ${i + 1}/${pages.size}…"
-                                val r = JSONObject(api("POST", "/admin/kounadia/ads/$id/pages", JSONObject().put("base64", p.b64).put("contentType", "image/jpeg")))
+                                val r = unwrapObj(api("POST", "/admin/kounadia/ads/$id/pages", JSONObject().put("base64", p.b64).put("contentType", "image/jpeg")))
                                 val u = str(r, "url")
+                                if (u.isEmpty()) throw IllegalStateException("La page ${i + 1} n'a pas pu être envoyée, réessaie.")
                                 if (u.isNotEmpty()) {
                                     urls.put(u)
                                     if (p.bmp != null) images[u] = p.bmp
@@ -1231,3 +1301,6 @@ private class RatioFrame(context: Context) : FrameLayout(context) {
         )
     }
 }
+
+/** Page d'une publicité : photo (url) ou texte. */
+private data class AdPage(val url: String?, val title: String, val text: String)
