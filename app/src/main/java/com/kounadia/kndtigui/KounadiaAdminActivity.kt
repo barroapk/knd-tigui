@@ -270,7 +270,6 @@ class KounadiaAdminActivity : AppCompatActivity() {
         if (out.isEmpty()) {
             val img = str(ad, "image_url")
             if (img.startsWith("http")) out.add(AdPage(img, "", ""))
-            else if (str(ad, "title").isNotEmpty()) out.add(AdPage(null, str(ad, "title"), str(ad, "text")))
         }
         return out.take(5)
     }

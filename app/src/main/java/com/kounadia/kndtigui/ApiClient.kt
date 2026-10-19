@@ -17,7 +17,7 @@ object ApiClient {
     fun request(baseUrl: String, method: String, path: String, token: String? = null, body: JSONObject? = null): String {
         val connection = URL(baseUrl + path).openConnection() as HttpURLConnection
         try {
-            val sendsBody = method == "POST" || method == "PATCH"
+            val sendsBody = method == "POST" || method == "PATCH" || method == "PUT"
             connection.requestMethod = if (method == "PATCH") "POST" else method
             if (method == "PATCH") {
                 connection.setRequestProperty("X-HTTP-Method-Override", "PATCH")
