@@ -625,38 +625,6 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
     }
 
-    /** Crée un code de réinitialisation (30 min) et propose de l'envoyer sur le WhatsApp du compte. */
-    private fun resetCode(name: String, phone: String) {
-        AlertDialog.Builder(this)
-            .setTitle("Réinitialiser le mot de passe ?")
-            .setMessage("Un code à 6 chiffres, valable 30 minutes, sera créé pour $name (+$phone). Envoie-le uniquement sur le WhatsApp de ce numéro.")
-            .setNegativeButton("Annuler", null)
-            .setPositiveButton("Créer le code") { _, _ ->
-                scope.launch {
-                    try {
-                        val r = unwrapObj(api("POST", "/admin/kounadia/reset-code", JSONObject().put("phone", phone)))
-                        val code = str(r, "code")
-                        val msg = "Bonjour $name 👋\nTon code KOUNADIA pour changer ton mot de passe : $code\nIl est valable 30 minutes. Dans l'application : Mon compte › Mot de passe oublié ?\nNe partage ce code avec personne.\n— L'équipe KOUNADIA"
-                        AlertDialog.Builder(this@KounadiaAdminActivity)
-                            .setTitle("Code : $code")
-                            .setMessage("Valable 30 minutes. Envoie-le sur le WhatsApp de +$phone.")
-                            .setNegativeButton("Fermer", null)
-                            .setPositiveButton("Envoyer sur WhatsApp") { _, _ ->
-                                try {
-                                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=" + URLEncoder.encode(msg, "UTF-8").replace("+", "%20"))))
-                                } catch (e: Exception) {
-                                    toast("WhatsApp introuvable")
-                                }
-                            }
-                            .show()
-                    } catch (e: Exception) {
-                        toast(e.message ?: "Erreur réseau")
-                    }
-                }
-            }
-            .show()
-    }
-
     private fun parseIso(v: String): Date? {
         if (v.length < 19) return null
         return try {
@@ -673,7 +641,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val search = LinearLayout(this)
         search.orientation = LinearLayout.HORIZONTAL
         search.gravity = Gravity.CENTER_VERTICAL
-        val q = Ui.input(this, "Nom ou numéro")
+        val q = Ui.input(this, "Nom, e-mail ou numéro")
         q.setText(subsQuery)
         q.isSingleLine = true
         q.imeOptions = EditorInfo.IME_ACTION_SEARCH
@@ -732,6 +700,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             val o = subs.getJSONObject(i)
             val name = str(o, "username")
             val phone = str(o, "phone").filter { it.isDigit() }
+            val email = str(o, "email")
             val until = parseIso(str(o, "premium_until"))
             val c = card()
             val head = LinearLayout(this)
@@ -740,7 +709,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             val left = LinearLayout(this)
             left.orientation = LinearLayout.VERTICAL
             left.addView(t(name, 15.5f, Ui.TEXT, true))
-            left.addView(t("+$phone", 12.5f, Ui.TEXT2))
+            left.addView(t(listOf(email, if (phone.isEmpty()) "" else "+$phone").filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "—" }, 12.5f, Ui.TEXT2))
             head.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
             val (status, sc) = when {
                 until == null -> Pair("Jamais abonné", Ui.TEXT2)
@@ -772,22 +741,35 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 until.time - now < 3L * 86400000 -> "Bonjour $name 👋\nTon abonnement KOUNADIA Premium se termine le ${df.format(until)}. Pour continuer sans interruption, tu peux le renouveler dans l'application : Paramètres › Mon compte.\nMerci pour ta confiance !\n— L'équipe KOUNADIA"
                 else -> "Bonjour $name 👋\nMerci d'utiliser KOUNADIA Premium ! Si tu as une question ou une idée, réponds simplement à ce message.\n— L'équipe KOUNADIA"
             }
-            actions.addView(smallButton("WhatsApp", Ui.SUCCESS) {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=" + URLEncoder.encode(msg, "UTF-8").replace("+", "%20"))))
-                } catch (e: Exception) {
-                    toast("WhatsApp introuvable")
-                }
-            }, weightLp(0))
-            actions.addView(smallButton("Appeler", Ui.TEXT) {
-                try {
-                    startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:+$phone")))
-                } catch (e: Exception) {
-                    toast("Appel impossible")
-                }
-            }, weightLp(8))
-            actions.addView(smallButton("Mot de passe", Ui.WARNING) { resetCode(name, phone) }, weightLp(8))
-            c.addView(actions)
+            var first = true
+            fun lp(): LinearLayout.LayoutParams = weightLp(if (first) 0 else 8).also { first = false }
+            if (email.isNotEmpty()) {
+                actions.addView(smallButton("E-mail", Ui.PRIMARY) {
+                    try {
+                        val uri = Uri.parse("mailto:$email?subject=" + Uri.encode("KOUNADIA") + "&body=" + Uri.encode(msg))
+                        startActivity(Intent(Intent.ACTION_SENDTO, uri))
+                    } catch (e: Exception) {
+                        toast("Aucune application e-mail")
+                    }
+                }, lp())
+            }
+            if (phone.isNotEmpty()) {
+                actions.addView(smallButton("WhatsApp", Ui.SUCCESS) {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=" + URLEncoder.encode(msg, "UTF-8").replace("+", "%20"))))
+                    } catch (e: Exception) {
+                        toast("WhatsApp introuvable")
+                    }
+                }, lp())
+                actions.addView(smallButton("Appeler", Ui.TEXT) {
+                    try {
+                        startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:+$phone")))
+                    } catch (e: Exception) {
+                        toast("Appel impossible")
+                    }
+                }, lp())
+            }
+            if (actions.childCount > 0) c.addView(actions)
             content.addView(c)
         }
     }
@@ -1050,7 +1032,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 line.setPadding(0, if (i == 0) 0 else dp(8), 0, 0)
                 val left = LinearLayout(this)
                 left.orientation = LinearLayout.VERTICAL
-                left.addView(t("${str(o, "username")} · ••${str(o, "phone4")}", 13.5f, Ui.TEXT, true))
+                left.addView(t("${str(o, "username")} · " + str(o, "contact").ifEmpty { "••" + str(o, "phone4") }, 13.5f, Ui.TEXT, true))
                 left.addView(t("${planName(str(o, "plan"))} · ${str(o, "paid_at").take(16).replace("T", " ")}", 11.5f, Ui.TEXT2))
                 line.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
                 line.addView(t(f(o.optInt("amount")), 14f, Ui.SUCCESS, true))
