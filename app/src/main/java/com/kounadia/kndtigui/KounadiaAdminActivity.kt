@@ -1058,6 +1058,20 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
     }
 
+    /** Pays ciblés par une pub (vide = tous les pays). */
+    private fun countriesOf(ad: JSONObject?): ArrayList<String> {
+        val out = ArrayList<String>()
+        val a = ad?.optJSONArray("countries") ?: return out
+        for (i in 0 until a.length()) a.optString(i).takeIf { it.length == 2 }?.let { out.add(it) }
+        return out
+    }
+
+    private fun countriesLabel(list: List<String>): String = when {
+        list.isEmpty() -> "Tous les pays"
+        list.size <= 3 -> list.joinToString(", ") { countryName(it) }
+        else -> list.take(2).joinToString(", ") { countryName(it) } + " + ${list.size - 2} autres"
+    }
+
     private fun adCard(ad: JSONObject, st: Map<String, Pair<Int, Int>>): View {
         val id = str(ad, "id")
         val active = ad.optBoolean("active", true)
@@ -1085,6 +1099,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val ctr = if (views > 0) String.format(Locale.FRANCE, "%.1f %%", clicks * 100.0 / views) else "–"
         info.addView(t("${n(views)} vues · ${n(clicks)} clics · $ctr", 12f, Ui.TEXT, true))
         c.addView(info)
+        c.addView(t("🌍 " + countriesLabel(countriesOf(ad)), 12f, Ui.TEXT2).also { it.setPadding(0, dp(6), 0, 0) })
 
         val link = str(ad, "link")
         if (link.isNotEmpty()) {
@@ -1298,6 +1313,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         var c1 = color(if (ad == null) presets[0].first else str(ad, "color1"), 0xFF4F46E5.toInt())
         var c2 = color(if (ad == null) presets[0].second else str(ad, "color2"), 0xFF7C3AED.toInt())
         var active = ad?.optBoolean("active", true) ?: true
+        val countries = countriesOf(ad)
 
         val oldLink = if (ad == null) "" else str(ad, "link")
         var linkMode = when {
@@ -1504,6 +1520,42 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
         refreshStrip()
 
+        label(box, "Pays de diffusion")
+        val countriesInfo = t("", 12.5f, Ui.TEXT2)
+        lateinit var refreshCountries: () -> Unit
+        fun pickCountries() {
+            val names = KND_COUNTRIES.map { it.second }.toTypedArray()
+            val checked = BooleanArray(KND_COUNTRIES.size) { countries.contains(KND_COUNTRIES[it].first) }
+            AlertDialog.Builder(this)
+                .setTitle("Pays de diffusion")
+                .setMultiChoiceItems(names, checked) { _, i, on -> checked[i] = on }
+                .setNegativeButton("Annuler", null)
+                .setPositiveButton("OK") { _, _ ->
+                    countries.clear()
+                    for (i in checked.indices) if (checked[i]) countries.add(KND_COUNTRIES[i].first)
+                    refreshCountries()
+                }
+                .show()
+        }
+        refreshCountries = chipRow(box, listOf("all" to "Tous les pays", "some" to "Choisir les pays"), { if (countries.isEmpty()) "all" else "some" }) {
+            if (it == "all") {
+                countries.clear()
+                refreshCountries()
+            } else {
+                pickCountries()
+            }
+        }
+        val baseRefresh = refreshCountries
+        refreshCountries = {
+            baseRefresh()
+            countriesInfo.text = if (countries.isEmpty()) "La pub est affichée dans tous les pays." else "Affichée uniquement : " + countries.joinToString(", ") { countryName(it) }
+        }
+        refreshCountries()
+        countriesInfo.setPadding(0, dp(6), 0, 0)
+        countriesInfo.setOnClickListener { if (countries.isNotEmpty()) pickCountries() }
+        box.addView(countriesInfo)
+        box.addView(t("Les textes sont traduits automatiquement dans la langue de chaque utilisateur.", 12f, Ui.TEXT2).also { it.setPadding(0, dp(4), 0, 0) })
+
         label(box, "Durée de diffusion")
         val endOptions = ArrayList<Pair<String, String>>()
         if (oldEnd != null) endOptions.add("keep" to "Jusqu'au ${dayLabel(oldEnd).take(5)}")
@@ -1624,7 +1676,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
                                 }
                             }
                         }
-                        val body2 = JSONObject().put("pages", urls)
+                        status.text = "Enregistrement et traduction…"
+                        val body2 = JSONObject().put("pages", urls).put("countries", JSONArray(countries))
                         when (endMode) {
                             "7" -> body2.put("endsAt", isoUtc(Date(System.currentTimeMillis() + 7L * 86400000)))
                             "30" -> body2.put("endsAt", isoUtc(Date(System.currentTimeMillis() + 30L * 86400000)))
