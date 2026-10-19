@@ -641,7 +641,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val search = LinearLayout(this)
         search.orientation = LinearLayout.HORIZONTAL
         search.gravity = Gravity.CENTER_VERTICAL
-        val q = Ui.input(this, "Nom, e-mail ou numéro")
+        val q = Ui.input(this, "Nom ou e-mail")
         q.setText(subsQuery)
         q.isSingleLine = true
         q.imeOptions = EditorInfo.IME_ACTION_SEARCH
@@ -699,7 +699,6 @@ class KounadiaAdminActivity : AppCompatActivity() {
         for (i in 0 until subs.length()) {
             val o = subs.getJSONObject(i)
             val name = str(o, "username")
-            val phone = str(o, "phone").filter { it.isDigit() }
             val email = str(o, "email")
             val until = parseIso(str(o, "premium_until"))
             val c = card()
@@ -709,7 +708,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             val left = LinearLayout(this)
             left.orientation = LinearLayout.VERTICAL
             left.addView(t(name, 15.5f, Ui.TEXT, true))
-            left.addView(t(listOf(email, if (phone.isEmpty()) "" else "+$phone").filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { "—" }, 12.5f, Ui.TEXT2))
+            left.addView(t(email.ifEmpty { "—" }, 12.5f, Ui.TEXT2))
             head.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
             val (status, sc) = when {
                 until == null -> Pair("Jamais abonné", Ui.TEXT2)
@@ -741,8 +740,6 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 until.time - now < 3L * 86400000 -> "Bonjour $name 👋\nTon abonnement KOUNADIA Premium se termine le ${df.format(until)}. Pour continuer sans interruption, tu peux le renouveler dans l'application : Paramètres › Mon compte.\nMerci pour ta confiance !\n— L'équipe KOUNADIA"
                 else -> "Bonjour $name 👋\nMerci d'utiliser KOUNADIA Premium ! Si tu as une question ou une idée, réponds simplement à ce message.\n— L'équipe KOUNADIA"
             }
-            var first = true
-            fun lp(): LinearLayout.LayoutParams = weightLp(if (first) 0 else 8).also { first = false }
             if (email.isNotEmpty()) {
                 actions.addView(smallButton("E-mail", Ui.PRIMARY) {
                     try {
@@ -751,23 +748,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                     } catch (e: Exception) {
                         toast("Aucune application e-mail")
                     }
-                }, lp())
-            }
-            if (phone.isNotEmpty()) {
-                actions.addView(smallButton("WhatsApp", Ui.SUCCESS) {
-                    try {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$phone?text=" + URLEncoder.encode(msg, "UTF-8").replace("+", "%20"))))
-                    } catch (e: Exception) {
-                        toast("WhatsApp introuvable")
-                    }
-                }, lp())
-                actions.addView(smallButton("Appeler", Ui.TEXT) {
-                    try {
-                        startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:+$phone")))
-                    } catch (e: Exception) {
-                        toast("Appel impossible")
-                    }
-                }, lp())
+                }, weightLp(0))
             }
             if (actions.childCount > 0) c.addView(actions)
             content.addView(c)
@@ -1032,7 +1013,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 line.setPadding(0, if (i == 0) 0 else dp(8), 0, 0)
                 val left = LinearLayout(this)
                 left.orientation = LinearLayout.VERTICAL
-                left.addView(t("${str(o, "username")} · " + str(o, "contact").ifEmpty { "••" + str(o, "phone4") }, 13.5f, Ui.TEXT, true))
+                left.addView(t("${str(o, "username")} · " + str(o, "contact").ifEmpty { "—" }, 13.5f, Ui.TEXT, true))
                 left.addView(t("${planName(str(o, "plan"))} · ${str(o, "paid_at").take(16).replace("T", " ")}", 11.5f, Ui.TEXT2))
                 line.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
                 line.addView(t(f(o.optInt("amount")), 14f, Ui.SUCCESS, true))
