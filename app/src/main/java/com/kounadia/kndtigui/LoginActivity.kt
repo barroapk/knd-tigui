@@ -24,13 +24,7 @@ import org.json.JSONObject
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
-/**
- * Point d'entree unique de l'application : un seul formulaire, aucun choix
- * de role visible. Le backend (POST /auth/login) determine si l'identifiant
- * correspond a un agent ou a un manager/admin, et cette activite route
- * ensuite vers l'ecran correspondant sans jamais reveler l'existence des
- * autres categories de comptes.
- */
+/** Connexion à KOUNADIA Admin : réservée au compte administrateur. */
 class LoginActivity : AppCompatActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var busy = false
@@ -79,7 +73,7 @@ class LoginActivity : AppCompatActivity() {
         sv.addView(col)
         setContentView(sv)
 
-        col.addView(t("KND-Tigui", 34f, Ui.TEXT, true))
+        col.addView(t("KOUNADIA Admin", 32f, Ui.TEXT, true))
         val sub = t("Connexion", 14f, Ui.TEXT2)
         sub.setPadding(0, dp(4), 0, dp(40))
         col.addView(sub)
@@ -129,10 +123,7 @@ class LoginActivity : AppCompatActivity() {
                     val role = response.getString("role")
                     val user = response.getJSONObject("user")
 
-                    val displayName = when (role) {
-                        "AGENT" -> "${user.optString("firstName")} ${user.optString("lastName")}".trim()
-                        else -> user.optString("displayName")
-                    }
+                    val displayName = user.optString("displayName")
 
                     SessionStorage.save(
                         this@LoginActivity,
@@ -141,8 +132,8 @@ class LoginActivity : AppCompatActivity() {
                         identifier,
                         displayName,
                         role,
-                        companyName = if (role == "AGENT") user.optString("companyName") else null,
-                        agentCode = if (role == "AGENT") user.optString("agentCode") else null,
+                        companyName = null,
+                        agentCode = null,
                     )
 
                     busy = false
@@ -165,11 +156,13 @@ class LoginActivity : AppCompatActivity() {
     }
 
     private fun routeToRoleActivity(role: String?) {
-        val target = when (role) {
-            "AGENT" -> Intent(this, AgentActivity::class.java)
-            "ADMIN" -> Intent(this, AdminActivity::class.java)
-            else -> Intent(this, ManagerActivity::class.java)
+        if (role != "ADMIN") {
+            // Seul l'administrateur peut utiliser cette application.
+            SessionStorage.clear(this)
+            showLoginForm()
+            return
         }
+        val target = Intent(this, KounadiaAdminActivity::class.java)
         target.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         startActivity(target)
         finish()

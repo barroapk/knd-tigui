@@ -156,6 +156,12 @@ class KounadiaAdminActivity : AppCompatActivity() {
         content.setPadding(dp(16), dp(16), dp(16), dp(40))
         scroll.addView(content)
         setContentView(scroll)
+        if (!SessionStorage.isLoggedIn(this)) {
+            startActivity(Intent(this, LoginActivity::class.java))
+            finish()
+            return
+        }
+        PushRegistration.register(this)
         render()
         loadAll()
     }
@@ -267,6 +273,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 ads = fetchAds()
                 loadImages()
             } catch (e: Exception) {
+                if (e is ApiException && e.httpCode == 401) {
+                    SessionExpiry.handle(this@KounadiaAdminActivity)
+                    finish()
+                    return@launch
+                }
                 error = e.message ?: "Erreur réseau"
             }
             loading = false
@@ -433,14 +444,10 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val top = LinearLayout(this)
         top.orientation = LinearLayout.HORIZONTAL
         top.gravity = Gravity.CENTER_VERTICAL
-        val back = t("←", 24f, Ui.TEXT, true)
-        back.setPadding(0, 0, dp(14), 0)
-        Ui.pressable(back) { finish() }
-        top.addView(back)
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
-        col.addView(t("KOUNADIA", 24f, Ui.TEXT, true))
-        col.addView(t(if (loading) "Mise à jour…" else "Administration de l'application", 13f, Ui.TEXT2))
+        col.addView(t("KOUNADIA Admin", 24f, Ui.TEXT, true))
+        col.addView(t(if (loading) "Mise à jour…" else "Bonjour ${SessionStorage.getDisplayName(this).orEmpty().ifBlank { "Admin" }}", 13f, Ui.TEXT2))
         top.addView(col, LinearLayout.LayoutParams(0, KW, 1f))
         val refresh = ImageView(this)
         refresh.setImageResource(R.drawable.ic_refresh)
@@ -455,7 +462,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val tabsRow = LinearLayout(this)
         tabsRow.orientation = LinearLayout.HORIZONTAL
         tabsRow.setPadding(0, dp(16), 0, 0)
-        for ((i, label) in listOf("Vue d'ensemble", "Revenus", "Utilisateurs", "Abonnés", "Publicités").withIndex()) {
+        for ((i, label) in listOf("Vue d'ensemble", "Revenus", "Utilisateurs", "Abonnés", "Publicités", "Compte").withIndex()) {
             val on = i == tab
             val c = t(label, 13.5f, if (on) Color.WHITE else Ui.TEXT2, true)
             c.setPadding(dp(16), dp(10), dp(16), dp(10))
@@ -514,8 +521,77 @@ class KounadiaAdminActivity : AppCompatActivity() {
             }
             2 -> if (s != null) renderStats(s) else if (loading) loadingCard()
             3 -> renderSubs()
-            else -> renderAds(s)
+            4 -> renderAds(s)
+            else -> renderAccount()
         }
+    }
+
+    // ---------- compte administrateur ----------
+
+    private fun renderAccount() {
+        sectionTitle("Mon compte")
+        val c = card()
+        c.addView(t(SessionStorage.getDisplayName(this).orEmpty().ifBlank { "Administrateur" }, 17f, Ui.TEXT, true))
+        c.addView(t("Identifiant : ${SessionStorage.getIdentifier(this).orEmpty()}", 13f, Ui.TEXT2))
+        c.addView(t("Rôle : administrateur (seul compte autorisé)", 13f, Ui.TEXT2))
+        content.addView(c)
+
+        sectionTitle("Changer le mot de passe")
+        val f = card()
+        val cur = Ui.input(this, "Mot de passe actuel", password = true)
+        val nw = Ui.input(this, "Nouveau mot de passe (8 caractères minimum)", password = true)
+        val nw2 = Ui.input(this, "Confirmer le nouveau mot de passe", password = true)
+        f.addView(cur)
+        f.addView(nw)
+        f.addView(nw2)
+        val msg = t("", 13f, Ui.TEXT2)
+        f.addView(msg)
+        f.addView(Ui.button(this, "Enregistrer le nouveau mot de passe") {
+            val a = cur.text.toString()
+            val b = nw.text.toString()
+            when {
+                a.isBlank() || b.isBlank() -> { msg.setTextColor(Ui.ERROR); msg.text = "Remplis tous les champs." }
+                b.length < 8 -> { msg.setTextColor(Ui.ERROR); msg.text = "8 caractères minimum." }
+                b != nw2.text.toString() -> { msg.setTextColor(Ui.ERROR); msg.text = "Les deux nouveaux mots de passe sont différents." }
+                else -> {
+                    msg.setTextColor(Ui.TEXT2)
+                    msg.text = "Enregistrement…"
+                    scope.launch {
+                        try {
+                            api("POST", "/auth/manager/password", JSONObject().put("currentPassword", a).put("newPassword", b))
+                            cur.setText("")
+                            nw.setText("")
+                            nw2.setText("")
+                            msg.setTextColor(Ui.SUCCESS)
+                            msg.text = "Mot de passe changé ✓"
+                        } catch (e: Exception) {
+                            msg.setTextColor(Ui.ERROR)
+                            msg.text = e.message ?: "Erreur réseau"
+                        }
+                    }
+                }
+            }
+        })
+        content.addView(f)
+
+        sectionTitle("Session")
+        val s = card()
+        s.addView(t("Se déconnecter de ce téléphone. Tu devras saisir à nouveau ton identifiant et ton mot de passe.", 13f, Ui.TEXT2))
+        s.addView(Ui.button(this, "Se déconnecter", "secondary") {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("Se déconnecter ?")
+                .setPositiveButton("Oui") { _, _ ->
+                    PushRegistration.unregister(this)
+                    SessionStorage.clear(this)
+                    val i = Intent(this, LoginActivity::class.java)
+                    i.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                    startActivity(i)
+                    finish()
+                }
+                .setNegativeButton("Annuler", null)
+                .show()
+        })
+        content.addView(s)
     }
 
     private fun loadingCard() {

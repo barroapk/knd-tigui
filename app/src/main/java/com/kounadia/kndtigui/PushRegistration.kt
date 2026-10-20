@@ -8,7 +8,7 @@ import org.json.JSONObject
 /** Enregistre / retire le jeton de notification de ce telephone aupres du serveur. */
 object PushRegistration {
     private fun path(role: String?, suffix: String): String =
-        (if (role == "AGENT") "/agents/push-token" else "/auth/manager/push-token") + suffix
+        "/auth/manager/push-token" + suffix
 
     fun register(context: Context) {
         val app = context.applicationContext as? KndTiguiApplication ?: return
