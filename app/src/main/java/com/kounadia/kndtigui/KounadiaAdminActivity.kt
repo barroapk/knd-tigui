@@ -71,6 +71,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private var subsQuery = ""
     private var subsLoading = false
     private var subsLoaded = false
+    private var sec: JSONObject? = null
+    private var secLoading = false
     private var csvPending: String? = null
     private val csvSaver = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         val csv = csvPending
@@ -270,6 +272,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                     null
                 }
                 downloads = withContext(Dispatchers.IO) { fetchDownloads() } ?: downloads
+                if (tab == 5) sec = try { unwrapObj(api("GET", "/admin/security")) } catch (e: Exception) { sec }
                 ads = fetchAds()
                 loadImages()
             } catch (e: Exception) {
@@ -462,7 +465,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val tabsRow = LinearLayout(this)
         tabsRow.orientation = LinearLayout.HORIZONTAL
         tabsRow.setPadding(0, dp(16), 0, 0)
-        for ((i, label) in listOf("Vue d'ensemble", "Revenus", "Utilisateurs", "Abonnés", "Publicités", "Compte").withIndex()) {
+        for ((i, label) in listOf("Vue d'ensemble", "Revenus", "Utilisateurs", "Abonnés", "Publicités", "Sécurité", "Compte").withIndex()) {
             val on = i == tab
             val c = t(label, 13.5f, if (on) Color.WHITE else Ui.TEXT2, true)
             c.setPadding(dp(16), dp(10), dp(16), dp(10))
@@ -472,7 +475,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             c.setOnClickListener {
                 if (tab != i) {
                     tab = i
-                    if (i == 3 && !subsLoaded) loadSubs() else render()
+                    if (i == 3 && !subsLoaded) loadSubs() else if (i == 5) loadSecurity() else render()
                 }
             }
             tabsRow.addView(c, lp)
@@ -522,8 +525,177 @@ class KounadiaAdminActivity : AppCompatActivity() {
             2 -> if (s != null) renderStats(s) else if (loading) loadingCard()
             3 -> renderSubs()
             4 -> renderAds(s)
+            5 -> renderSecurity()
             else -> renderAccount()
         }
+    }
+
+    // ---------- sécurité ----------
+
+    private fun loadSecurity() {
+        secLoading = true
+        render()
+        scope.launch {
+            try {
+                sec = unwrapObj(api("GET", "/admin/security"))
+            } catch (e: Exception) {
+                toast(e.message ?: "Erreur réseau")
+            }
+            secLoading = false
+            render()
+        }
+    }
+
+    private fun secTime(iso: String): String {
+        val d = parseIso(iso) ?: return iso
+        return SimpleDateFormat("dd/MM HH:mm", Locale.FRANCE).format(d)
+    }
+
+    /** Explication en français simple de chaque type d'événement. */
+    private fun secLabel(type: String): String = when (type) {
+        "admin_login_fail" -> "Mauvais mot de passe sur la connexion admin"
+        "many_fails" -> "Beaucoup de refus depuis la même adresse"
+        "block" -> "Adresse bloquée"
+        "unblock" -> "Adresse débloquée"
+        else -> type
+    }
+
+    private fun secColor(level: String): Int = when (level) {
+        "critique" -> Ui.ERROR
+        "attention" -> Ui.WARNING
+        else -> Ui.TEXT2
+    }
+
+    private fun renderSecurity() {
+        val d = sec
+        if (d == null) {
+            if (secLoading) loadingCard() else {
+                val c = card()
+                c.addView(t("Données de sécurité indisponibles.", 14f, Ui.TEXT2))
+                c.addView(Ui.button(this, "Réessayer") { loadSecurity() })
+                content.addView(c)
+            }
+            return
+        }
+        val status = str(d, "status")
+        val (title, desc, color) = when (status) {
+            "alerte" -> Triple("🔴 Alerte", "Des événements graves ont eu lieu ces dernières 24 h. Regarde le journal ci-dessous.", Ui.ERROR)
+            "surveillance" -> Triple("🟠 Sous surveillance", "Quelques comportements suspects, sans gravité pour l'instant.", Ui.WARNING)
+            else -> Triple("🟢 Tout est calme", "Aucun comportement suspect ces dernières 24 h.", Ui.SUCCESS)
+        }
+        val head = card()
+        head.background = Ui.rounded(this, Ui.withAlpha(color, 0x1F), 18, Ui.withAlpha(color, 0x55))
+        head.addView(t(title, 20f, color, true))
+        head.addView(t(desc, 13f, Ui.TEXT))
+        val lpH = head.layoutParams as LinearLayout.LayoutParams
+        lpH.setMargins(0, dp(16), 0, 0)
+        content.addView(head)
+
+        val day = d.optJSONObject("day") ?: JSONObject()
+        val srv = d.optJSONObject("server") ?: JSONObject()
+        content.addView(pair(
+            kpi("Alertes graves", n(day.optInt("critical")), "dernières 24 h", Ui.ERROR),
+            kpi("Avertissements", n(day.optInt("warnings")), "dernières 24 h", Ui.WARNING),
+        ))
+        content.addView(pair(
+            kpi("Requêtes reçues", n(srv.optInt("requests")), "depuis le démarrage du serveur", Ui.TEXT),
+            kpi("Requêtes refusées", n(srv.optInt("refused")), "adresses bloquées", Ui.PRIMARY),
+        ))
+
+        val watched = d.optJSONArray("watched") ?: JSONArray()
+        if (watched.length() > 0) {
+            sectionTitle("Adresses surveillées (10 dernières min)")
+            val c = card()
+            for (i in 0 until watched.length()) {
+                val w = watched.getJSONObject(i)
+                c.addView(t("${str(w, "ip")} · ${w.optInt("fails")} refus", 13.5f, Ui.WARNING, true))
+            }
+            content.addView(c)
+        }
+
+        sectionTitle("Adresses bloquées")
+        val blocked = d.optJSONArray("blocked") ?: JSONArray()
+        val bc = card()
+        if (blocked.length() == 0) bc.addView(t("Aucune adresse bloquée.", 13.5f, Ui.TEXT2))
+        for (i in 0 until blocked.length()) {
+            val b = blocked.getJSONObject(i)
+            val ip = str(b, "ip")
+            val until = str(b, "until")
+            bc.addView(t(ip, 15f, Ui.TEXT, true))
+            bc.addView(t(str(b, "reason"), 12.5f, Ui.TEXT2))
+            bc.addView(t(if (until.isBlank()) "Bloquée définitivement" else "Jusqu'au ${secTime(until)} · par ${str(b, "created_by")}", 12f, Ui.TEXT2))
+            bc.addView(Ui.button(this, "Débloquer $ip", "secondary") {
+                scope.launch {
+                    try {
+                        api("POST", "/admin/security/unblock", JSONObject().put("ip", ip))
+                        toast("$ip débloquée")
+                        loadSecurity()
+                    } catch (e: Exception) {
+                        toast(e.message ?: "Erreur réseau")
+                    }
+                }
+            })
+        }
+        content.addView(bc)
+
+        sectionTitle("Bloquer une adresse")
+        val fc = card()
+        val ipIn = Ui.input(this, "Adresse IP (ex. 102.180.12.34)")
+        fc.addView(ipIn)
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        for ((mins, label) in listOf(60 to "1 heure", 1440 to "24 heures", 0 to "Définitif")) {
+            val btn = Ui.button(this, label, if (mins == 0) "primary" else "secondary") {
+                val ip = ipIn.text.toString().trim()
+                if (!Regex("^[0-9a-fA-F:.]{3,64}$").matches(ip)) {
+                    toast("Adresse invalide")
+                    return@button
+                }
+                scope.launch {
+                    try {
+                        val body = JSONObject().put("ip", ip).put("reason", "Bloquée par l'admin")
+                        if (mins > 0) body.put("minutes", mins)
+                        api("POST", "/admin/security/block", body)
+                        toast("$ip bloquée")
+                        loadSecurity()
+                    } catch (e: Exception) {
+                        toast(e.message ?: "Erreur réseau")
+                    }
+                }
+            }
+            val lp = LinearLayout.LayoutParams(0, KW, 1f)
+            lp.setMargins(dp(2), dp(8), dp(2), 0)
+            row.addView(btn, lp)
+        }
+        fc.addView(row)
+        content.addView(fc)
+
+        sectionTitle("Journal de sécurité")
+        val events = d.optJSONArray("events") ?: JSONArray()
+        val ec = card()
+        if (events.length() == 0) ec.addView(t("Rien à signaler.", 13.5f, Ui.TEXT2))
+        for (i in 0 until events.length()) {
+            val e = events.getJSONObject(i)
+            val lvl = str(e, "level")
+            ec.addView(t("${secTime(str(e, "created_at"))} · ${secLabel(str(e, "type"))}", 13.5f, secColor(lvl), true))
+            ec.addView(t("${str(e, "ip")} — ${str(e, "detail")}", 12.5f, Ui.TEXT2))
+            if (i < events.length() - 1) ec.addView(View(this).also { it.minimumHeight = dp(10) })
+        }
+        content.addView(ec)
+
+        val rules = d.optJSONObject("rules") ?: JSONObject()
+        sectionTitle("Comment ça marche ?")
+        val hc = card()
+        hc.addView(t(
+            "• Chaque requête qui arrive sur le serveur passe d'abord par un « garde-barrière ».\n" +
+                "• Si une même adresse envoie plus de ${rules.optInt("floodPerMinute")} requêtes en une minute, elle est bloquée ${rules.optInt("autoBlockMinutes")} min (attaque par inondation).\n" +
+                "• Si une adresse reçoit ${rules.optInt("failsBlock")} refus en 10 min (mots de passe faux, accès interdits), elle est bloquée ${rules.optInt("autoBlockMinutes")} min (attaque par essais).\n" +
+                "• Toute tentative ratée sur la connexion admin est notée et t'est signalée par notification.\n" +
+                "• Toi, connecté ici, tu n'es jamais bloqué : tu peux toujours débloquer une adresse.\n" +
+                "• Au Burkina, beaucoup de téléphones partagent la même adresse chez l'opérateur : si de vrais utilisateurs se plaignent, débloque l'adresse.",
+            13f, Ui.TEXT2,
+        ))
+        content.addView(hc)
     }
 
     // ---------- compte administrateur ----------
