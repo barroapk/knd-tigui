@@ -101,6 +101,40 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
     }
 
+    // Téléchargements réels de l'APK (compteur GitHub des versions publiées).
+    private var downloads: JSONObject? = null
+
+    private fun fetchDownloads(): JSONObject? = try {
+        val c = URL("https://api.github.com/repos/barroapk/kounadia-app/releases?per_page=100").openConnection() as HttpURLConnection
+        c.connectTimeout = 10000
+        c.readTimeout = 15000
+        c.setRequestProperty("Accept", "application/vnd.github+json")
+        c.setRequestProperty("User-Agent", "KND-Tigui")
+        val text = c.inputStream.bufferedReader().use { it.readText() }
+        c.disconnect()
+        val arr = JSONArray(text)
+        var total = 0
+        var latest = 0
+        var ver = ""
+        for (i in 0 until arr.length()) {
+            val rel = arr.getJSONObject(i)
+            val assets = rel.optJSONArray("assets") ?: JSONArray()
+            var count = 0
+            for (j in 0 until assets.length()) {
+                val a = assets.getJSONObject(j)
+                if (a.optString("name") == "kounadia.apk") count += a.optInt("download_count")
+            }
+            total += count
+            if (i == 0) {
+                latest = count
+                ver = rel.optString("tag_name").removePrefix("v")
+            }
+        }
+        JSONObject().put("total", total).put("latest", latest).put("ver", ver)
+    } catch (e: Exception) {
+        null
+    }
+
     private val presets = listOf(
         "#4F46E5" to "#7C3AED",
         "#059669" to "#10B981",
@@ -229,6 +263,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     null
                 }
+                downloads = withContext(Dispatchers.IO) { fetchDownloads() } ?: downloads
                 ads = fetchAds()
                 loadImages()
             } catch (e: Exception) {
@@ -541,6 +576,14 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 kpiTrend("Nouveaux", n(cur.optInt("newUsers")), cur.optDouble("newUsers", 0.0), pv("newUsers"), Ui.WARNING) { tab = 2; render() },
             ),
         )
+        downloads?.let { d ->
+            content.addView(
+                pair(
+                    kpi("Téléchargements", n(d.optInt("total")), "APK depuis le lancement", Ui.PRIMARY),
+                    kpi("Version ${d.optString("ver")}", n(d.optInt("latest")), "téléchargements de cette version", Ui.SUCCESS),
+                ),
+            )
+        }
         if (b != null) {
             content.addView(
                 pair(
