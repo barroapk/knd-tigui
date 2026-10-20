@@ -72,6 +72,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private var subsLoading = false
     private var subsLoaded = false
     private var sec: JSONObject? = null
+    private lateinit var scroll: ScrollView
+    private lateinit var nav: LinearLayout
+    private var robot: JSONObject? = null
+    private var site: JSONObject? = null
+    private val devResults = HashMap<String, Pair<String, Int>>()
     private var secLoading = false
     private var csvPending: String? = null
     private val csvSaver = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
@@ -151,13 +156,23 @@ class KounadiaAdminActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val scroll = ScrollView(this)
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
+        root.setBackgroundColor(Ui.BG)
+        scroll = ScrollView(this)
         scroll.setBackgroundColor(Ui.BG)
         content = LinearLayout(this)
         content.orientation = LinearLayout.VERTICAL
-        content.setPadding(dp(16), dp(16), dp(16), dp(40))
+        content.setPadding(dp(16), dp(16), dp(16), dp(32))
         scroll.addView(content)
-        setContentView(scroll)
+        root.addView(scroll, LinearLayout.LayoutParams(KM, 0, 1f))
+        root.addView(View(this).also { it.setBackgroundColor(Ui.BORDER) }, LinearLayout.LayoutParams(KM, dp(1)))
+        nav = LinearLayout(this)
+        nav.orientation = LinearLayout.HORIZONTAL
+        nav.setBackgroundColor(Ui.SURFACE)
+        nav.setPadding(dp(6), dp(6), dp(6), dp(8))
+        root.addView(nav, LinearLayout.LayoutParams(KM, KW))
+        setContentView(root)
         if (!SessionStorage.isLoggedIn(this)) {
             startActivity(Intent(this, LoginActivity::class.java))
             finish()
@@ -272,7 +287,9 @@ class KounadiaAdminActivity : AppCompatActivity() {
                     null
                 }
                 downloads = withContext(Dispatchers.IO) { fetchDownloads() } ?: downloads
-                if (tab == 5) sec = try { unwrapObj(api("GET", "/admin/security")) } catch (e: Exception) { sec }
+                sec = try { unwrapObj(api("GET", "/admin/security")) } catch (e: Exception) { sec }
+                robot = withContext(Dispatchers.IO) { httpJson("$ROBOT/") } ?: robot
+                site = withContext(Dispatchers.IO) { httpJson("$SITE/version.json") } ?: site
                 ads = fetchAds()
                 loadImages()
             } catch (e: Exception) {
@@ -444,44 +461,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private fun render() {
         content.removeAllViews()
 
-        val top = LinearLayout(this)
-        top.orientation = LinearLayout.HORIZONTAL
-        top.gravity = Gravity.CENTER_VERTICAL
-        val col = LinearLayout(this)
-        col.orientation = LinearLayout.VERTICAL
-        col.addView(t("KOUNADIA Admin", 24f, Ui.TEXT, true))
-        col.addView(t(if (loading) "Mise à jour…" else "Bonjour ${SessionStorage.getDisplayName(this).orEmpty().ifBlank { "Admin" }}", 13f, Ui.TEXT2))
-        top.addView(col, LinearLayout.LayoutParams(0, KW, 1f))
-        val refresh = ImageView(this)
-        refresh.setImageResource(R.drawable.ic_refresh)
-        refresh.setColorFilter(Ui.TEXT2)
-        refresh.setPadding(dp(10), dp(10), dp(10), dp(10))
-        Ui.pressable(refresh) { loadAll() }
-        top.addView(refresh, LinearLayout.LayoutParams(dp(44), dp(44)))
-        content.addView(top)
-
-        val tabsScroll = android.widget.HorizontalScrollView(this)
-        tabsScroll.isHorizontalScrollBarEnabled = false
-        val tabsRow = LinearLayout(this)
-        tabsRow.orientation = LinearLayout.HORIZONTAL
-        tabsRow.setPadding(0, dp(16), 0, 0)
-        for ((i, label) in listOf("Vue d'ensemble", "Revenus", "Utilisateurs", "Abonnés", "Publicités", "Sécurité", "Compte").withIndex()) {
-            val on = i == tab
-            val c = t(label, 13.5f, if (on) Color.WHITE else Ui.TEXT2, true)
-            c.setPadding(dp(16), dp(10), dp(16), dp(10))
-            c.background = Ui.rounded(this, if (on) Ui.PRIMARY else Ui.SURFACE, 20, if (on) null else Ui.BORDER)
-            val lp = LinearLayout.LayoutParams(KW, KW)
-            lp.setMargins(0, 0, dp(8), 0)
-            c.setOnClickListener {
-                if (tab != i) {
-                    tab = i
-                    if (i == 3 && !subsLoaded) loadSubs() else if (i == 5) loadSecurity() else render()
-                }
-            }
-            tabsRow.addView(c, lp)
-        }
-        tabsScroll.addView(tabsRow)
-        content.addView(tabsScroll)
+        renderHeader()
+        buildNav()
 
         val chips = LinearLayout(this)
         chips.orientation = LinearLayout.HORIZONTAL
@@ -503,6 +484,13 @@ class KounadiaAdminActivity : AppCompatActivity() {
             chips.addView(c, lp)
         }
         if (tab <= 2) content.addView(chips)
+        if (tab == 1 || tab == 3) content.addView(segment(listOf(1 to "Revenus", 3 to "Abonnés")))
+        if (tab == 5 || tab == 6 || tab == 8) {
+            val back = t("‹  Plus", 14f, Ui.PRIMARY, true)
+            back.setPadding(0, dp(14), 0, 0)
+            Ui.pressable(back) { go(7) }
+            content.addView(back)
+        }
 
         if (error.isNotEmpty()) {
             val e = card()
@@ -515,7 +503,10 @@ class KounadiaAdminActivity : AppCompatActivity() {
 
         val s = stats
         when (tab) {
-            0 -> renderOverview()
+            0 -> {
+                renderStatusStrip()
+                renderOverview()
+            }
             1 -> {
                 biz?.let { renderBusiness(it) }
                 renderRevenueChart()
@@ -526,11 +517,414 @@ class KounadiaAdminActivity : AppCompatActivity() {
             3 -> renderSubs()
             4 -> renderAds(s)
             5 -> renderSecurity()
+            7 -> renderMore()
+            8 -> renderDev()
             else -> renderAccount()
         }
     }
 
+    // ---------- navigation ----------
+
+    private fun pageTitle(): String = when (tab) {
+        0 -> "Tableau de bord"
+        1 -> "Revenus"
+        2 -> "Audience"
+        3 -> "Abonnés"
+        4 -> "Publicités"
+        5 -> "Sécurité"
+        7 -> "Plus"
+        8 -> "Espace développeur"
+        else -> "Mon compte"
+    }
+
+    /** Ouvre une page (et charge ses données si besoin). */
+    private fun go(newTab: Int) {
+        tab = newTab
+        when {
+            newTab == 3 && !subsLoaded -> loadSubs()
+            newTab == 5 -> loadSecurity()
+            else -> render()
+        }
+        scroll.post { scroll.scrollTo(0, 0) }
+    }
+
+    private fun renderHeader() {
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        val logo = t("K", 20f, Color.WHITE, true)
+        logo.gravity = Gravity.CENTER
+        logo.background = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+            intArrayOf(0xFF4F46E5.toInt(), 0xFF7C3AED.toInt()),
+        ).also { it.cornerRadius = dp(12).toFloat() }
+        top.addView(logo, LinearLayout.LayoutParams(dp(42), dp(42)))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(12), 0, 0, 0)
+        col.addView(t(pageTitle(), 21f, Ui.TEXT, true))
+        val today = SimpleDateFormat("EEEE d MMMM", Locale.FRANCE).format(Date()).replaceFirstChar { it.uppercase() }
+        col.addView(t(if (loading) "Mise à jour…" else "KOUNADIA Admin · $today", 12.5f, Ui.TEXT2))
+        top.addView(col, LinearLayout.LayoutParams(0, KW, 1f))
+        val refresh = ImageView(this)
+        refresh.setImageResource(R.drawable.ic_refresh)
+        refresh.setColorFilter(Ui.TEXT2)
+        refresh.setPadding(dp(10), dp(10), dp(10), dp(10))
+        refresh.background = Ui.rounded(this, Ui.SURFACE, 12, Ui.BORDER)
+        Ui.pressable(refresh) { loadAll() }
+        top.addView(refresh, LinearLayout.LayoutParams(dp(44), dp(44)))
+        content.addView(top)
+    }
+
+    private fun buildNav() {
+        nav.removeAllViews()
+        val items = listOf(
+            Triple("Accueil", R.drawable.ic_home, 0),
+            Triple("Revenus", R.drawable.ic_chart, 1),
+            Triple("Audience", R.drawable.ic_users, 2),
+            Triple("Pubs", R.drawable.ic_megaphone, 4),
+            Triple("Plus", R.drawable.ic_grid, 7),
+        )
+        val current = when (tab) {
+            0 -> 0
+            1, 3 -> 1
+            2 -> 2
+            4 -> 4
+            else -> 7
+        }
+        for ((label, icon, target) in items) {
+            val on = target == current
+            val col = LinearLayout(this)
+            col.orientation = LinearLayout.VERTICAL
+            col.gravity = Gravity.CENTER_HORIZONTAL
+            col.setPadding(0, dp(6), 0, dp(4))
+            val iv = ImageView(this)
+            iv.setImageResource(icon)
+            iv.setColorFilter(if (on) Ui.PRIMARY else Ui.TEXT2)
+            iv.setPadding(dp(14), dp(4), dp(14), dp(4))
+            if (on) iv.background = Ui.rounded(this, Ui.withAlpha(Ui.PRIMARY, 0x2A), 14)
+            col.addView(iv, LinearLayout.LayoutParams(dp(54), dp(30)))
+            val tv = t(label, 11.5f, if (on) Ui.TEXT else Ui.TEXT2, on)
+            tv.setPadding(0, dp(3), 0, 0)
+            col.addView(tv)
+            col.setOnClickListener { if (current != target || tab != target) go(target) }
+            nav.addView(col, LinearLayout.LayoutParams(0, KW, 1f))
+        }
+    }
+
+    /** Petit sélecteur à deux choix (ex. Revenus | Abonnés). */
+    private fun segment(options: List<Pair<Int, String>>): View {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.HORIZONTAL
+        box.setPadding(dp(4), dp(4), dp(4), dp(4))
+        box.background = Ui.rounded(this, Ui.SURFACE, 14, Ui.BORDER)
+        for ((target, label) in options) {
+            val on = tab == target
+            val c = t(label, 13.5f, if (on) Color.WHITE else Ui.TEXT2, true)
+            c.gravity = Gravity.CENTER
+            c.setPadding(0, dp(9), 0, dp(9))
+            if (on) c.background = Ui.rounded(this, Ui.PRIMARY, 11)
+            c.setOnClickListener { if (!on) go(target) }
+            box.addView(c, LinearLayout.LayoutParams(0, KW, 1f))
+        }
+        val lp = LinearLayout.LayoutParams(KM, KW)
+        lp.setMargins(0, dp(14), 0, 0)
+        box.layoutParams = lp
+        return box
+    }
+
+    // ---------- état des services ----------
+
+    private fun httpJson(url: String): JSONObject? = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 8000
+        c.readTimeout = 10000
+        c.setRequestProperty("User-Agent", "KOUNADIA-Admin")
+        val txt = c.inputStream.bufferedReader().use { it.readText() }
+        c.disconnect()
+        JSONObject(txt)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Minutes écoulées depuis une date ISO (UTC), ou -1. */
+    private fun ageMin(iso: String): Long = try {
+        val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        f.timeZone = java.util.TimeZone.getTimeZone("UTC")
+        (System.currentTimeMillis() - f.parse(iso.take(19))!!.time) / 60000
+    } catch (e: Exception) {
+        -1
+    }
+
+    private fun robotOk(): Boolean {
+        val r = robot ?: return false
+        val a = ageMin(str(r, "at"))
+        return a in 0..3
+    }
+
+    private fun tile(label: String, value: String, sub: String, color: Int, onClick: (() -> Unit)?): View {
+        val v = kpi(label, value, sub, color)
+        if (onClick != null) Ui.pressable(v, onClick)
+        return v
+    }
+
+    private fun renderStatusStrip() {
+        sectionTitle("État de KOUNADIA")
+        val st = str(sec ?: JSONObject(), "status")
+        val (secTxt, secCol) = when (st) {
+            "alerte" -> Pair("Alerte", Ui.ERROR)
+            "surveillance" -> Pair("À surveiller", Ui.WARNING)
+            "calme" -> Pair("Calme", Ui.SUCCESS)
+            else -> Pair("—", Ui.TEXT2)
+        }
+        val serverOk = admin != null || stats != null
+        content.addView(pair(
+            tile("Serveur", if (serverOk) "En ligne" else "Injoignable", "API sur Render", if (serverOk) Ui.SUCCESS else Ui.ERROR) { go(8) },
+            tile("Sécurité", secTxt, "dernières 24 h", secCol) { go(5) },
+        ))
+        val r = robot
+        val live = r?.optInt("live") ?: 0
+        val ver = str(site ?: JSONObject(), "version")
+        content.addView(pair(
+            tile("Robot direct", if (robotOk()) "Actif" else "À vérifier", if (robotOk()) "$live match(s) suivis" else "scores et notifications", if (robotOk()) Ui.SUCCESS else Ui.WARNING) { go(8) },
+            tile("Version publiée", if (ver.isBlank()) "—" else ver, "sur le site", Ui.PRIMARY) { go(8) },
+        ))
+    }
+
+    // ---------- page « Plus » ----------
+
+    private fun menuCard(icon: Int, color: Int, title: String, sub: String, onClick: () -> Unit): View {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(14), dp(14), dp(12), dp(14))
+        row.background = Ui.rounded(this, Ui.SURFACE, 18, Ui.BORDER)
+        val iv = ImageView(this)
+        iv.setImageResource(icon)
+        iv.setColorFilter(color)
+        iv.setPadding(dp(10), dp(10), dp(10), dp(10))
+        iv.background = Ui.rounded(this, Ui.withAlpha(color, 0x26), 14)
+        row.addView(iv, LinearLayout.LayoutParams(dp(46), dp(46)))
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(14), 0, dp(8), 0)
+        col.addView(t(title, 16f, Ui.TEXT, true))
+        col.addView(t(sub, 12.5f, Ui.TEXT2))
+        row.addView(col, LinearLayout.LayoutParams(0, KW, 1f))
+        val ch = ImageView(this)
+        ch.setImageResource(R.drawable.ic_chevron)
+        ch.setColorFilter(Ui.TEXT2)
+        row.addView(ch, LinearLayout.LayoutParams(dp(20), dp(20)))
+        Ui.pressable(row, onClick)
+        val lp = LinearLayout.LayoutParams(KM, KW)
+        lp.setMargins(0, dp(10), 0, 0)
+        row.layoutParams = lp
+        return row
+    }
+
+    private fun renderMore() {
+        sectionTitle("Gestion")
+        val st = str(sec ?: JSONObject(), "status")
+        val secCol = when (st) { "alerte" -> Ui.ERROR; "surveillance" -> Ui.WARNING; else -> Ui.SUCCESS }
+        content.addView(menuCard(R.drawable.ic_shield, secCol, "Sécurité", "Attaques bloquées, adresses suspectes, journal") { go(5) })
+        content.addView(menuCard(R.drawable.ic_code, Ui.PRIMARY, "Espace développeur", "État des services, commandes, aide en français simple") { go(8) })
+        content.addView(menuCard(R.drawable.ic_user, Ui.TEXT2, "Mon compte", "Mot de passe et déconnexion") { go(6) })
+        sectionTitle("Raccourcis")
+        content.addView(menuCard(R.drawable.ic_home, Ui.SUCCESS, "Site KOUNADIA", "kounadia.pages.dev") { openLink(SITE) })
+        content.addView(menuCard(R.drawable.ic_chart, Ui.WARNING, "Fabrications (GitHub Actions)", "Voir les builds de l'application") { openLink("https://github.com/barroapk/kounadia-app/actions") })
+    }
+
+    // ---------- espace développeur ----------
+
+    private fun openLink(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            toast("Impossible d'ouvrir le lien")
+        }
+    }
+
+    private fun copyText(label: String, value: String) {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        cm.setPrimaryClip(android.content.ClipData.newPlainText(label, value))
+        toast("Copié : $label")
+    }
+
+    private fun testService(key: String) {
+        devResults[key] = Pair("Test en cours…", Ui.TEXT2)
+        render()
+        scope.launch {
+            val res: Pair<String, Int> = withContext(Dispatchers.IO) {
+                when (key) {
+                    "api" -> {
+                        val t0 = System.currentTimeMillis()
+                        try {
+                            val base = ConfigStorage.getApiBaseUrl(this@KounadiaAdminActivity).trimEnd('/')
+                            val c = URL("$base/ping").openConnection() as HttpURLConnection
+                            c.connectTimeout = 70000
+                            c.readTimeout = 70000
+                            c.inputStream.close()
+                            c.disconnect()
+                            val ms = System.currentTimeMillis() - t0
+                            Pair(if (ms > 8000) "Réveillé en ${ms / 1000} s (il dormait)" else "Répond en $ms ms ✓", Ui.SUCCESS)
+                        } catch (e: Exception) {
+                            Pair("Ne répond pas ✗", Ui.ERROR)
+                        }
+                    }
+                    "robot" -> {
+                        val r = httpJson("$ROBOT/")
+                        if (r == null) Pair("Injoignable ✗", Ui.ERROR) else {
+                            robot = r
+                            val err = if (r.isNull("err")) "" else str(r, "err")
+                            if (robotOk()) Pair("Actif ✓ · ${r.optInt("live")} match(s) en direct", Ui.SUCCESS)
+                            else Pair("Ne tourne plus depuis ${ageMin(str(r, "at"))} min ${err.take(60)}", Ui.WARNING)
+                        }
+                    }
+                    else -> {
+                        val v = httpJson("$SITE/version.json")
+                        if (v == null) Pair("Injoignable ✗", Ui.ERROR) else {
+                            site = v
+                            Pair("En ligne ✓ · version ${str(v, "version")} du ${str(v, "date")}", Ui.SUCCESS)
+                        }
+                    }
+                }
+            }
+            devResults[key] = res
+            render()
+        }
+    }
+
+    private fun serviceCard(key: String, title: String, what: String, where: String) {
+        val c = card()
+        c.addView(t(title, 16f, Ui.TEXT, true))
+        c.addView(t(what, 13f, Ui.TEXT2))
+        c.addView(t("Où : $where", 12.5f, Ui.TEXT2))
+        devResults[key]?.let { (msg, col) ->
+            val r = t(msg, 13.5f, col, true)
+            r.setPadding(0, dp(8), 0, 0)
+            c.addView(r)
+        }
+        c.addView(Ui.button(this, "Tester maintenant", "secondary") { testService(key) })
+        content.addView(c)
+    }
+
+    private fun commandCard(title: String, explain: String, cmd: String) {
+        val c = card()
+        c.addView(t(title, 15f, Ui.TEXT, true))
+        c.addView(t(explain, 12.5f, Ui.TEXT2))
+        val code = t(cmd, 12f, 0xFF9BE7B0.toInt())
+        code.typeface = android.graphics.Typeface.MONOSPACE
+        code.setPadding(dp(12), dp(10), dp(12), dp(10))
+        code.background = Ui.rounded(this, 0xFF0A0D12.toInt(), 10, Ui.BORDER)
+        val lp = LinearLayout.LayoutParams(KM, KW)
+        lp.setMargins(0, dp(8), 0, 0)
+        c.addView(code, lp)
+        c.addView(Ui.button(this, "Copier la commande", "secondary") { copyText(title, cmd) })
+        content.addView(c)
+    }
+
+    private fun infoCard(title: String, body: String) {
+        val c = card()
+        c.addView(t(title, 15f, Ui.TEXT, true))
+        val b = t(body, 13f, Ui.TEXT2)
+        b.setPadding(0, dp(4), 0, 0)
+        c.addView(b)
+        content.addView(c)
+    }
+
+    private fun renderDev() {
+        infoCard(
+            "Bienvenue 👋",
+            "Cet espace t'explique comment KOUNADIA fonctionne, en français simple. Tu peux tester chaque service, copier les commandes Termux utiles et retrouver quoi faire en cas de problème.",
+        )
+
+        sectionTitle("Comment KOUNADIA fonctionne")
+        infoCard(
+            "Le chemin d'une information",
+            "1. L'utilisateur ouvre l'application KOUNADIA sur son téléphone.\n" +
+                "2. Pour son compte et son abonnement, l'app parle au SERVEUR (Render).\n" +
+                "3. Le serveur range tout dans la BASE DE DONNÉES (Supabase).\n" +
+                "4. Le ROBOT (Cloudflare) lit les scores toutes les 3 secondes et envoie les notifications.\n" +
+                "5. GITHUB fabrique l'application (APK) et met le site à jour.",
+        )
+
+        sectionTitle("Tester les services")
+        serviceCard("api", "Serveur (API)", "Comptes, abonnements, publicités, statistiques, sécurité.", "Render · knd-api")
+        serviceCard("robot", "Robot du direct", "Scores en temps réel, notifications, traduction des pubs.", "Cloudflare · kounadia-notif")
+        serviceCard("site", "Site de téléchargement", "Page où les gens téléchargent KOUNADIA.", "Cloudflare Pages · kounadia.pages.dev")
+
+        sectionTitle("Mes outils en ligne")
+        content.addView(menuCard(R.drawable.ic_chart, Ui.WARNING, "GitHub · KOUNADIA", "Fabrications de l'app et du site") { openLink("https://github.com/barroapk/kounadia-app/actions") })
+        content.addView(menuCard(R.drawable.ic_code, Ui.WARNING, "GitHub · KOUNADIA Admin", "Fabrications de cette application") { openLink("https://github.com/barroapk/knd-tigui/actions") })
+        content.addView(menuCard(R.drawable.ic_home, Ui.PRIMARY, "Render", "Le serveur : journaux, redémarrage") { openLink("https://dashboard.render.com") })
+        content.addView(menuCard(R.drawable.ic_inbox, Ui.SUCCESS, "Supabase", "La base de données (SQL Editor)") { openLink("https://supabase.com/dashboard") })
+        content.addView(menuCard(R.drawable.ic_shield, Ui.WARNING, "Cloudflare", "Le robot et le site") { openLink("https://dash.cloudflare.com") })
+        content.addView(menuCard(R.drawable.ic_alert, Ui.ERROR, "Firebase", "Les notifications") { openLink("https://console.firebase.google.com") })
+
+        sectionTitle("Commandes Termux utiles")
+        commandCard(
+            "Fabriquer une version de test",
+            "Crée un APK pour essayer, sans le donner aux utilisateurs.",
+            "gh workflow run build-apk.yml -R barroapk/kounadia-app -f publier=false",
+        )
+        commandCard(
+            "Récupérer le dernier APK de test",
+            "Attend la fin de la fabrication puis met l'APK dans Téléchargements › kounadia-test.",
+            "R=\$(gh run list -R barroapk/kounadia-app -w build-apk.yml -L 1 --json databaseId -q '.[0].databaseId') && gh run watch \$R -R barroapk/kounadia-app --exit-status >/dev/null && rm -rf ~/storage/downloads/kounadia-test && gh run download \$R -R barroapk/kounadia-app -n kounadia-apk -D ~/storage/downloads/kounadia-test && echo OK",
+        )
+        commandCard(
+            "Publier pour tout le monde",
+            "Nouvelle version sur le site + carte « Mise à jour » chez tous les utilisateurs. Remplace le texte des nouveautés.",
+            "gh workflow run build-apk.yml -R barroapk/kounadia-app -f publier=true -f notes=\"Améliorations et corrections\"",
+        )
+        commandCard(
+            "Voir l'état du robot",
+            "Affiche : matchs suivis (live), notifications envoyées (sent), erreurs (err).",
+            "curl -s https://kounadia-notif.barroapk.workers.dev/; echo",
+        )
+        commandCard(
+            "Relancer le robot",
+            "Remet le robot en ligne s'il ne répond plus.",
+            "gh workflow run deploy-notif.yml -R barroapk/kounadia-app",
+        )
+        commandCard(
+            "Fabriquer KOUNADIA Admin",
+            "Crée un nouvel APK de cette application d'administration.",
+            "gh workflow run build.yml -R barroapk/knd-tigui",
+        )
+        commandCard(
+            "Voir les dernières fabrications",
+            "✓ = réussie, X = échouée.",
+            "gh run list -R barroapk/kounadia-app -L 5",
+        )
+
+        sectionTitle("Si quelque chose ne marche pas")
+        infoCard("Le serveur met du temps à répondre", "C'est normal avec l'offre gratuite de Render : il s'endort après 15 min sans visite et met jusqu'à 1 minute à se réveiller.")
+        infoCard("Les scores ne bougent plus", "Teste le « Robot du direct » ci-dessus. S'il ne tourne plus, copie la commande « Relancer le robot ».")
+        infoCard("Un utilisateur ne peut plus se connecter", "Va dans Sécurité : si son adresse est bloquée, appuie sur « Débloquer ».")
+        infoCard("Je suis bloqué hors de l'application", "Dans Supabase › SQL Editor, lance :  delete from blocked_ips;  puis reconnecte-toi.")
+        infoCard("Une fabrication a échoué", "Copie le message d'erreur (commande « Voir les dernières fabrications ») et envoie-le à Claude.")
+
+        sectionTitle("Petit lexique")
+        infoCard(
+            "Les mots à connaître",
+            "• APK : le fichier qui installe une application Android.\n" +
+                "• Build (fabrication) : GitHub transforme le code en APK.\n" +
+                "• Commit / Push : enregistrer une modification du code / l'envoyer sur GitHub.\n" +
+                "• Serveur / API : l'ordinateur en ligne qui répond aux applications.\n" +
+                "• Base de données : là où sont rangés les comptes, paiements et pubs.\n" +
+                "• Robot : petit programme qui travaille seul en permanence (scores, notifications).\n" +
+                "• Adresse IP : l'adresse d'un appareil sur internet.\n" +
+                "• Secret : mot de passe technique gardé hors du code (clés Firebase, Cloudflare…).",
+        )
+    }
+
     // ---------- sécurité ----------
+
+    companion object {
+        const val ROBOT = "https://kounadia-notif.barroapk.workers.dev"
+        const val SITE = "https://kounadia.pages.dev"
+    }
 
     private fun loadSecurity() {
         secLoading = true
