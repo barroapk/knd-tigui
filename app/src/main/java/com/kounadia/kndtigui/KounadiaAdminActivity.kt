@@ -78,6 +78,23 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private var site: JSONObject? = null
     private val devResults = HashMap<String, Pair<String, Int>>()
     private var secLoading = false
+    // Plantages de l'app KOUNADIA (boîte noire)
+    private var crash: JSONObject? = null
+    private var crashLoading = false
+    private var crashDays = 7
+    private var txtPending: String? = null
+    private val txtSaver = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri: Uri? ->
+        val txt = txtPending
+        txtPending = null
+        if (uri != null && txt != null) {
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(txt.toByteArray(Charsets.UTF_8)) }
+                toast("Rapport enregistré")
+            } catch (e: Exception) {
+                toast("Enregistrement impossible")
+            }
+        }
+    }
     private var csvPending: String? = null
     private val csvSaver = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         val csv = csvPending
@@ -485,7 +502,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
         if (tab <= 2) content.addView(chips)
         if (tab == 1 || tab == 3) content.addView(segment(listOf(1 to "Revenus", 3 to "Abonnés")))
-        if (tab == 5 || tab == 6 || tab == 8) {
+        if (tab == 5 || tab == 6 || tab == 8 || tab == 9) {
             val back = t("‹  Plus", 14f, Ui.PRIMARY, true)
             back.setPadding(0, dp(14), 0, 0)
             Ui.pressable(back) { go(7) }
@@ -519,6 +536,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             5 -> renderSecurity()
             7 -> renderMore()
             8 -> renderDev()
+            9 -> renderCrashes()
             else -> renderAccount()
         }
     }
@@ -534,6 +552,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         5 -> "Sécurité"
         7 -> "Plus"
         8 -> "Espace développeur"
+        9 -> "Plantages de l'app"
         else -> "Mon compte"
     }
 
@@ -543,6 +562,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         when {
             newTab == 3 && !subsLoaded -> loadSubs()
             newTab == 5 -> loadSecurity()
+            newTab == 9 -> loadCrashes()
             else -> render()
         }
         scroll.post { scroll.scrollTo(0, 0) }
@@ -727,6 +747,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val st = str(sec ?: JSONObject(), "status")
         val secCol = when (st) { "alerte" -> Ui.ERROR; "surveillance" -> Ui.WARNING; else -> Ui.SUCCESS }
         content.addView(menuCard(R.drawable.ic_shield, secCol, "Sécurité", "Attaques bloquées, adresses suspectes, journal") { go(5) })
+        content.addView(menuCard(R.drawable.ic_shield, Ui.ERROR, "Plantages de l'app", "Boîte noire : erreurs chez les utilisateurs, rapport à copier") { go(9) })
         content.addView(menuCard(R.drawable.ic_code, Ui.PRIMARY, "Espace développeur", "État des services, commandes, aide en français simple") { go(8) })
         content.addView(menuCard(R.drawable.ic_user, Ui.TEXT2, "Mon compte", "Mot de passe et déconnexion") { go(6) })
         sectionTitle("Raccourcis")
@@ -924,6 +945,81 @@ class KounadiaAdminActivity : AppCompatActivity() {
     companion object {
         const val ROBOT = "https://kounadia-notif.barroapk.workers.dev"
         const val SITE = "https://kounadia.pages.dev"
+    }
+
+    // ---------- plantages (boîte noire) ----------
+
+    private fun loadCrashes() {
+        crashLoading = true
+        render()
+        scope.launch {
+            try {
+                crash = unwrapObj(api("GET", "/admin/kounadia/crashes?days=$crashDays"))
+            } catch (e: Exception) {
+                toast(e.message ?: "Erreur réseau")
+            }
+            crashLoading = false
+            render()
+        }
+    }
+
+    private fun renderCrashes() {
+        val chips = LinearLayout(this)
+        chips.orientation = LinearLayout.HORIZONTAL
+        chips.setPadding(0, dp(14), 0, dp(4))
+        for ((d, label) in listOf(1 to "24 h", 7 to "7 jours", 30 to "30 jours")) {
+            val on = d == crashDays
+            val c = t(label, 13f, if (on) Color.WHITE else Ui.TEXT2, true)
+            c.gravity = Gravity.CENTER
+            c.setPadding(0, dp(9), 0, dp(9))
+            c.background = Ui.rounded(this, if (on) Ui.PRIMARY else Ui.SURFACE, 12, if (on) null else Ui.BORDER)
+            val lp = LinearLayout.LayoutParams(0, KW, 1f)
+            lp.setMargins(dp(3), 0, dp(3), 0)
+            c.setOnClickListener {
+                if (crashDays != d && !crashLoading) {
+                    crashDays = d
+                    loadCrashes()
+                }
+            }
+            chips.addView(c, lp)
+        }
+        content.addView(chips)
+
+        val data = crash
+        if (data == null) {
+            if (crashLoading) loadingCard() else infoCard("Plantages", "Impossible de charger les plantages. Vérifie internet puis réessaie.")
+            return
+        }
+        val total = data.optInt("total", 0)
+        val items = data.optJSONArray("items") ?: JSONArray()
+        val report = data.optString("text", "")
+
+        val head = card()
+        head.addView(t(if (total == 0) "Aucun plantage ✅" else "$total plantage${if (total > 1) "s" else ""}", 20f, if (total == 0) Ui.SUCCESS else Ui.ERROR, true))
+        head.addView(t(
+            if (total == 0) "Aucune erreur signalée par les téléphones sur cette période."
+            else "${items.length()} problème${if (items.length() > 1) "s" else ""} différent${if (items.length() > 1) "s" else ""}. Copie le rapport et colle-le dans la conversation pour la correction.",
+            13f, Ui.TEXT2,
+        ))
+        if (total > 0) {
+            head.addView(Ui.button(this, "Copier le rapport", "primary") { copyText("Rapport des plantages", report) })
+            head.addView(Ui.button(this, "Télécharger (.txt)", "secondary") {
+                txtPending = report
+                val day = SimpleDateFormat("yyyy-MM-dd", Locale.FRANCE).format(Date())
+                txtSaver.launch("plantages-kounadia-$day.txt")
+            })
+        }
+        content.addView(head)
+
+        for (i in 0 until items.length()) {
+            val g = items.optJSONObject(i) ?: continue
+            val c = card()
+            val fatal = g.optBoolean("fatal", false)
+            c.addView(t("#${i + 1} · ${g.optInt("count")} fois · ${g.optInt("devices")} téléphone${if (g.optInt("devices") > 1) "s" else ""}", 14f, if (fatal) Ui.ERROR else Ui.WARNING, true))
+            c.addView(t("${str(g, "type")} : ${str(g, "msg")}", 13f, Ui.TEXT))
+            c.addView(t("Version ${str(g, "version")} · dernier ${secTime(str(g, "last"))}${if (fatal) " · bloquant" else ""}", 12f, Ui.TEXT2))
+            content.addView(c)
+        }
     }
 
     private fun loadSecurity() {
