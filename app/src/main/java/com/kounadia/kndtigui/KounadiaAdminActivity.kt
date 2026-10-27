@@ -54,6 +54,7 @@ import java.util.TimeZone
 
 private const val KM = ViewGroup.LayoutParams.MATCH_PARENT
 private const val KW = ViewGroup.LayoutParams.WRAP_CONTENT
+private const val PUB_BASE = "https://raw.githubusercontent.com/barroapk/kfeed/pub"
 
 /** Onglet KOUNADIA : statistiques d'usage de l'application et gestion des publicités. */
 class KounadiaAdminActivity : AppCompatActivity() {
@@ -66,6 +67,10 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private var yearly: JSONObject? = null
     private var admin: JSONObject? = null
     private var tab = 0
+    private var pubDay: JSONObject? = null
+    private var pubLoading = false
+    private var pubError = ""
+    private val pubImages = HashMap<String, Bitmap>()
     private var subs = JSONArray()
     private var subsMode = "active"
     private var subsQuery = ""
@@ -502,6 +507,12 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
         if (tab <= 2) content.addView(chips)
         if (tab == 1 || tab == 3) content.addView(segment(listOf(1 to "Revenus", 3 to "Abonnés")))
+        if (tab == 10) {
+            val back = t("‹  Pubs", 14f, Ui.PRIMARY, true)
+            back.setPadding(0, dp(14), 0, 0)
+            Ui.pressable(back) { go(4) }
+            content.addView(back)
+        }
         if (tab == 5 || tab == 6 || tab == 8 || tab == 9) {
             val back = t("‹  Plus", 14f, Ui.PRIMARY, true)
             back.setPadding(0, dp(14), 0, 0)
@@ -537,6 +548,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             7 -> renderMore()
             8 -> renderDev()
             9 -> renderCrashes()
+            10 -> renderPub()
             else -> renderAccount()
         }
     }
@@ -553,6 +565,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         7 -> "Plus"
         8 -> "Espace développeur"
         9 -> "Plantages de l'app"
+        10 -> "Pub du jour"
         else -> "Mon compte"
     }
 
@@ -563,6 +576,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             newTab == 3 && !subsLoaded -> loadSubs()
             newTab == 5 -> loadSecurity()
             newTab == 9 -> loadCrashes()
+            newTab == 10 -> loadPub()
             else -> render()
         }
         scroll.post { scroll.scrollTo(0, 0) }
@@ -609,7 +623,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             0 -> 0
             1, 3 -> 1
             2 -> 2
-            4 -> 4
+            4, 10 -> 4
             else -> 7
         }
         for ((label, icon, target) in items) {
@@ -750,6 +764,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         content.addView(menuCard(R.drawable.ic_shield, Ui.ERROR, "Plantages de l'app", "Boîte noire : erreurs chez les utilisateurs, rapport à copier") { go(9) })
         content.addView(menuCard(R.drawable.ic_code, Ui.PRIMARY, "Espace développeur", "État des services, commandes, aide en français simple") { go(8) })
         content.addView(menuCard(R.drawable.ic_user, Ui.TEXT2, "Mon compte", "Mot de passe et déconnexion") { go(6) })
+        content.addView(menuCard(R.drawable.ic_megaphone, Ui.SUCCESS, "Pub du jour", "Coups sûrs du jour en images, à partager") { go(10) })
         sectionTitle("Raccourcis")
         content.addView(menuCard(R.drawable.ic_home, Ui.SUCCESS, "Site KOUNADIA", "kounadia.pages.dev") { openLink(SITE) })
         content.addView(menuCard(R.drawable.ic_chart, Ui.WARNING, "Fabrications (GitHub Actions)", "Voir les builds de l'application") { openLink("https://github.com/barroapk/kounadia-app/actions") })
@@ -1820,7 +1835,170 @@ class KounadiaAdminActivity : AppCompatActivity() {
         return m
     }
 
+    // ---------- pub du jour (images des coups sûrs à partager) ----------
+
+    private fun pubFile(name: String): java.io.File {
+        val dir = java.io.File(cacheDir, "pub")
+        dir.mkdirs()
+        return java.io.File(dir, name.replace('/', '_'))
+    }
+
+    /** Télécharge un fichier (image) ; null si échec. */
+    private fun fetchBytes(url: String): ByteArray? = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 20000
+        c.readTimeout = 30000
+        c.setRequestProperty("User-Agent", "KOUNADIA-Admin")
+        val b = c.inputStream.use { it.readBytes() }
+        c.disconnect()
+        b
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun loadPub() {
+        pubLoading = true
+        pubError = ""
+        render()
+        scope.launch {
+            val day = withContext(Dispatchers.IO) { httpJson("$PUB_BASE/latest.json?t=${System.currentTimeMillis() / 60000}") }
+            if (day == null) {
+                pubError = "Les images ne sont pas encore prêtes. Elles arrivent chaque matin vers 8 h."
+            } else {
+                pubDay = day
+                val items = day.optJSONArray("items") ?: JSONArray()
+                for (i in 0 until items.length()) {
+                    val item = items.getJSONObject(i)
+                    for (file in listOf(str(item, "file"), str(item, "rfile"))) {
+                        if (file.isEmpty() || pubImages.containsKey(file)) continue
+                        val f = pubFile(file)
+                        val bmp = withContext(Dispatchers.IO) {
+                            val bytes = if (f.exists() && f.length() > 0) f.readBytes() else fetchBytes("$PUB_BASE/$file")?.also { b -> f.writeBytes(b) }
+                            bytes?.let { b -> decodeScaled(b, 720) }
+                        }
+                        if (bmp != null) pubImages[file] = bmp
+                    }
+                }
+            }
+            pubLoading = false
+            if (tab == 10) render()
+        }
+    }
+
+    private fun sharePub(files: List<String>) {
+        try {
+            val uris = ArrayList<Uri>()
+            for (file in files) {
+                val f = pubFile(file)
+                if (f.exists() && f.length() > 0) uris.add(androidx.core.content.FileProvider.getUriForFile(this, "$packageName.files", f))
+            }
+            if (uris.isEmpty()) {
+                toast("Image pas encore téléchargée, réessaie.")
+                return
+            }
+            val res = files.any { it.contains("-res-") }
+            val text = (if (res) "✅ Résultats des Coups sûrs KOUNADIA" else "⚽ Coups sûrs du jour sur KOUNADIA") + " 👉 $SITE\n18+ · Aucun gain garanti"
+            val i = if (uris.size == 1) {
+                Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+            } else {
+                Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            }
+            i.type = "image/png"
+            i.putExtra(Intent.EXTRA_TEXT, text)
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(i, "Partager la pub"))
+        } catch (e: Exception) {
+            toast("Partage impossible pour le moment.")
+        }
+    }
+
+    private fun renderPub() {
+        val d = pubDay
+        sectionTitle(if (d != null) str(d, "label") else "Pub du jour")
+        if (pubLoading && d == null) {
+            val c = card()
+            c.addView(t("Chargement des images…", 13f, Ui.TEXT2))
+            content.addView(c)
+            return
+        }
+        if (d == null) {
+            val c = card()
+            c.addView(t(pubError.ifEmpty { "Aucune image pour le moment." }, 13f, Ui.TEXT2))
+            content.addView(c)
+            content.addView(Ui.button(this, "Réessayer", "secondary") { loadPub() })
+            return
+        }
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).also { it.timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
+        if (str(d, "day") != today) {
+            val c = card()
+            c.addView(t("Ce sont les images d'hier. Celles d'aujourd'hui arrivent vers 8 h.", 13f, Ui.WARNING, true))
+            content.addView(c)
+        }
+        val items = d.optJSONArray("items") ?: JSONArray()
+        val all = ArrayList<String>()
+        val allRes = ArrayList<String>()
+        for (i in 0 until items.length()) {
+            str(items.getJSONObject(i), "file").takeIf { it.isNotEmpty() }?.let { all.add(it) }
+            str(items.getJSONObject(i), "rfile").takeIf { it.isNotEmpty() }?.let { allRes.add(it) }
+        }
+        if (all.size > 1) {
+            val b = Ui.button(this, "Partager les pronostics (${all.size} images)") { sharePub(all) }
+            (b.layoutParams as LinearLayout.LayoutParams).setMargins(0, 0, 0, dp(if (allRes.size > 1) 0 else 12))
+            content.addView(b)
+        }
+        if (allRes.size > 1) {
+            val b = Ui.button(this, "Partager les résultats (${allRes.size} images)", "secondary") { sharePub(allRes) }
+            (b.layoutParams as LinearLayout.LayoutParams).setMargins(0, dp(10), 0, dp(12))
+            content.addView(b)
+        }
+        for (i in 0 until items.length()) {
+            val item = items.getJSONObject(i)
+            val file = str(item, "file")
+            val c = card()
+            c.addView(t(str(item, "title"), 16f, Ui.TEXT, true))
+            c.addView(t(str(item, "sub"), 12.5f, Ui.TEXT2))
+            val bmp = pubImages[file]
+            if (bmp != null) {
+                val iv = ImageView(this)
+                iv.setImageBitmap(bmp)
+                iv.adjustViewBounds = true
+                iv.scaleType = ImageView.ScaleType.FIT_CENTER
+                val lp = LinearLayout.LayoutParams(KM, KW)
+                lp.setMargins(0, dp(10), 0, 0)
+                c.addView(iv, lp)
+                Ui.pressable(iv) { sharePub(listOf(file)) }
+            } else {
+                c.addView(t(if (pubLoading) "Chargement…" else "Image indisponible", 13f, Ui.TEXT2))
+            }
+            c.addView(Ui.button(this, "Partager les pronostics", "secondary") { sharePub(listOf(file)) })
+            val rfile = str(item, "rfile")
+            if (rfile.isNotEmpty()) {
+                val rt = t("Résultats · " + str(item, "rsub"), 14f, Ui.SUCCESS, true)
+                rt.setPadding(0, dp(18), 0, 0)
+                c.addView(rt)
+                val rb = pubImages[rfile]
+                if (rb != null) {
+                    val iv = ImageView(this)
+                    iv.setImageBitmap(rb)
+                    iv.adjustViewBounds = true
+                    iv.scaleType = ImageView.ScaleType.FIT_CENTER
+                    val lp = LinearLayout.LayoutParams(KM, KW)
+                    lp.setMargins(0, dp(10), 0, 0)
+                    c.addView(iv, lp)
+                    Ui.pressable(iv) { sharePub(listOf(rfile)) }
+                }
+                c.addView(Ui.button(this, "Partager les résultats") { sharePub(listOf(rfile)) })
+            }
+            content.addView(c)
+        }
+        val note = t("Les matchs déjà commencés ne sont pas sur les images. 18+ · Aucun gain garanti.", 12f, Ui.TEXT2)
+        note.setPadding(0, dp(4), 0, dp(16))
+        content.addView(note)
+    }
+
     private fun renderAds(s: JSONObject?) {
+        sectionTitle("Images à partager")
+        content.addView(menuCard(R.drawable.ic_megaphone, Ui.SUCCESS, "Pub du jour", "Coups sûrs du jour en images (dès 8 h), à partager") { go(10) })
         sectionTitle("Publicités")
         val add = Ui.button(this, "+  Nouvelle publicité") { openEditor(null) }
         (add.layoutParams as LinearLayout.LayoutParams).setMargins(0, 0, 0, dp(12))
