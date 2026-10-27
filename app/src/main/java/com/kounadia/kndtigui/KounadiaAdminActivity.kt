@@ -765,6 +765,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         content.addView(menuCard(R.drawable.ic_code, Ui.PRIMARY, "Espace développeur", "État des services, commandes, aide en français simple") { go(8) })
         content.addView(menuCard(R.drawable.ic_user, Ui.TEXT2, "Mon compte", "Mot de passe et déconnexion") { go(6) })
         content.addView(menuCard(R.drawable.ic_megaphone, Ui.SUCCESS, "Pub du jour", "Coups sûrs du jour en images, à partager") { go(10) })
+        content.addView(menuCard(R.drawable.ic_inbox, Ui.SUCCESS, "Numéro WhatsApp", "Le numéro affiché dans l'app, le site et les images") { editWhatsApp() })
         sectionTitle("Raccourcis")
         content.addView(menuCard(R.drawable.ic_home, Ui.SUCCESS, "Site KOUNADIA", "kounadia.pages.dev") { openLink(SITE) })
         content.addView(menuCard(R.drawable.ic_chart, Ui.WARNING, "Fabrications (GitHub Actions)", "Voir les builds de l'application") { openLink("https://github.com/barroapk/kounadia-app/actions") })
@@ -2102,6 +2103,66 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 toast(e.message ?: "Erreur")
             }
             reloadAds()
+        }
+    }
+
+    /** Numéro WhatsApp de KOUNADIA SERVICE : enregistré dans le robot, lu par l'app, le site et la Pub du jour. */
+    private fun editWhatsApp() {
+        scope.launch {
+            val cur = withContext(Dispatchers.IO) { httpJson("$ROBOT/contact") }?.optString("wa", "") ?: ""
+            val input = EditText(this@KounadiaAdminActivity)
+            input.inputType = InputType.TYPE_CLASS_PHONE
+            input.setText(if (cur.isNotEmpty()) "+$cur" else "+226")
+            input.setSelection(input.text.length)
+            val box = FrameLayout(this@KounadiaAdminActivity)
+            box.setPadding(dp(20), dp(8), dp(20), 0)
+            box.addView(input)
+            AlertDialog.Builder(this@KounadiaAdminActivity)
+                .setTitle("Numéro WhatsApp")
+                .setMessage("Avec l'indicatif du pays, ex. +226 52 57 12 01. Il change partout en quelques minutes.")
+                .setView(box)
+                .setNegativeButton("Annuler", null)
+                .setPositiveButton("Enregistrer") { _, _ -> saveWhatsApp(input.text.toString()) }
+                .show()
+        }
+    }
+
+    private fun saveWhatsApp(raw: String) {
+        val wa = raw.filter { it.isDigit() }
+        if (wa.length !in 8..15) {
+            toast("Numéro invalide : mets l'indicatif, ex. +226 52 57 12 01")
+            return
+        }
+        val token = SessionStorage.getToken(this)
+        if (token == null) {
+            toast("Session expirée, reconnecte-toi.")
+            return
+        }
+        toast("Enregistrement…")
+        scope.launch {
+            val code = withContext(Dispatchers.IO) {
+                try {
+                    val c = URL("$ROBOT/contact").openConnection() as HttpURLConnection
+                    c.requestMethod = "POST"
+                    c.connectTimeout = 20000
+                    c.readTimeout = 90000
+                    c.doOutput = true
+                    c.setRequestProperty("Content-Type", "application/json")
+                    c.setRequestProperty("Authorization", "Bearer $token")
+                    c.outputStream.use { it.write(JSONObject().put("wa", wa).toString().toByteArray()) }
+                    val r = c.responseCode
+                    c.disconnect()
+                    r
+                } catch (e: Exception) {
+                    -1
+                }
+            }
+            toast(when (code) {
+                200 -> "Numéro enregistré : +$wa"
+                401, 403 -> "Accès refusé : reconnecte-toi."
+                400 -> "Numéro invalide."
+                else -> "Pas de connexion. Réessaie."
+            })
         }
     }
 
