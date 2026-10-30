@@ -1529,6 +1529,16 @@ class KounadiaAdminActivity : AppCompatActivity() {
             }
         }
         if (bestTab.isNotEmpty()) sb.append(" Onglet le plus ouvert : $bestTab (${n(bestN)} fois).")
+        val cs = range?.optJSONArray("countries")
+        if (cs != null && cs.length() > 0) {
+            val top = ArrayList<Pair<String, Int>>()
+            for (i in 0 until cs.length()) {
+                val o = cs.getJSONObject(i)
+                if (str(o, "iso").isNotEmpty() && o.optInt("visits") > 0) top.add(countryName(str(o, "iso")) to o.optInt("visits"))
+            }
+            top.sortByDescending { it.second }
+            if (top.isNotEmpty()) sb.append(" Pays les plus actifs : " + top.take(3).joinToString(", ") { "${it.first} (${n(it.second)})" } + ".")
+        }
         val ads = a.optJSONArray("ads") ?: JSONArray()
         var v = 0
         var c = 0
@@ -1785,6 +1795,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             val left = LinearLayout(this)
             left.orientation = LinearLayout.VERTICAL
             left.addView(t(name, 15.5f, Ui.TEXT, true))
+            left.addView(t(countryLabel(str(o, "country")), 12.5f, Ui.TEXT).also { it.setPadding(0, dp(2), 0, dp(1)) })
             left.addView(t(email.ifEmpty { "—" }, 12.5f, Ui.TEXT2))
             head.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
             val (status, sc) = when {
@@ -1879,7 +1890,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         else -> name
     }
 
-    private fun rankCard(rows: List<Triple<String, Int, String>>): View {
+    private fun rankCard(rows: List<Triple<String, Int, String>>, unit: String = ""): View {
         val c = card()
         val max = (rows.maxOfOrNull { it.second } ?: 0).coerceAtLeast(1)
         rows.forEachIndexed { i, (label, value, sub) ->
@@ -1892,7 +1903,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             left.addView(t(label, 14f, Ui.TEXT, true))
             if (sub.isNotEmpty()) left.addView(t(sub, 11f, Ui.TEXT2))
             line.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
-            line.addView(t(n(value), 15f, Ui.PRIMARY, true))
+            line.addView(t(n(value) + unit, 15f, Ui.PRIMARY, true))
             c.addView(line)
 
             val track = FrameLayout(this)
@@ -1964,6 +1975,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
             c.addView(KndDailyChart(this, labels, values), LinearLayout.LayoutParams(KM, dp(150)))
             content.addView(c)
         }
+
+        renderCountries(false)
 
         val features = s.optJSONArray("features") ?: JSONArray()
         if (features.length() > 0) {
@@ -2099,6 +2112,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             }
             content.addView(rankCard(rows))
         }
+        renderCountries(true)
         val recent = b.optJSONArray("recent") ?: JSONArray()
         if (recent.length() > 0) {
             sectionTitle("Derniers paiements")
@@ -2110,7 +2124,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 line.setPadding(0, if (i == 0) 0 else dp(8), 0, 0)
                 val left = LinearLayout(this)
                 left.orientation = LinearLayout.VERTICAL
-                left.addView(t("${str(o, "username")} · " + str(o, "contact").ifEmpty { "—" }, 13.5f, Ui.TEXT, true))
+                left.addView(t("${flagOf(str(o, "country"))}  ${str(o, "username")} · " + str(o, "contact").ifEmpty { "—" }, 13.5f, Ui.TEXT, true))
                 left.addView(t("${planName(str(o, "plan"))} · ${str(o, "paid_at").take(16).replace("T", " ")}", 11.5f, Ui.TEXT2))
                 line.addView(left, LinearLayout.LayoutParams(0, KW, 1f))
                 line.addView(t(f(o.optInt("amount")), 14f, Ui.SUCCESS, true))
@@ -2123,6 +2137,46 @@ class KounadiaAdminActivity : AppCompatActivity() {
             c.addView(t("${b.optInt("pending")} paiement(s) commencé(s) mais non finalisé(s) depuis 24 h.", 12.5f, Ui.TEXT2))
             content.addView(c)
         }
+    }
+
+    // ---------- pays ----------
+
+    /** Drapeau d'un pays (code ISO à 2 lettres) ; 🌍 si inconnu. */
+    private fun flagOf(iso: String): String {
+        if (iso.length != 2 || !iso.all { it in 'A'..'Z' }) return "🌍"
+        return String(Character.toChars(0x1F1E6 + (iso[0] - 'A'))) + String(Character.toChars(0x1F1E6 + (iso[1] - 'A')))
+    }
+
+    private fun countryLabel(iso: String): String = if (iso.isEmpty()) "🌍  Pays inconnu" else "${flagOf(iso)}  ${countryName(iso)}"
+
+    /** Statistiques par pays : visites, comptes créés, abonnements (audience) ou argent (revenus). */
+    private fun renderCountries(money: Boolean) {
+        val arr = range?.optJSONArray("countries") ?: return
+        val rows = ArrayList<Triple<String, Int, String>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val iso = str(o, "iso")
+            val pay = o.optInt("payments")
+            val act = o.optInt("active")
+            if (money) {
+                if (pay == 0 && act == 0) continue
+                rows.add(Triple(countryLabel(iso), o.optInt("net"), "${plural(pay, "abonnement payé", "abonnements payés")} · ${plural(act, "abonné actif", "abonnés actifs")} en ce moment"))
+            } else {
+                if (o.optInt("visits") == 0 && o.optInt("accounts") == 0 && pay == 0) continue
+                rows.add(Triple(countryLabel(iso), o.optInt("visits"), "${plural(o.optInt("accounts"), "compte créé", "comptes créés")} · ${plural(pay, "abonnement payé", "abonnements payés")} · ${plural(act, "abonné actif", "abonnés actifs")}"))
+            }
+        }
+        if (rows.isEmpty()) return
+        rows.sortByDescending { it.second }
+        sectionTitle(if (money) "Abonnements par pays · ${periodLabel()}" else "Utilisateurs par pays · ${periodLabel()}")
+        content.addView(rankCard(rows.take(25), if (money) " F" else ""))
+        val note = t(
+            if (money) "Montant net encaissé par pays. Pays = celui choisi dans l'application par le client."
+            else "Chiffre = visites (utilisateurs par jour additionnés). Pays = celui choisi dans l'application. Les visites par pays sont comptées à partir de la version 1.4.13 de l'app.",
+            11.5f, Ui.TEXT2,
+        )
+        note.setPadding(dp(4), 0, 0, dp(4))
+        content.addView(note)
     }
 
     // ---------- codes 1xBet des coupons du jour ----------
