@@ -501,7 +501,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             Ui.pressable(back) { go(4) }
             content.addView(back)
         }
-        if (tab == 5 || tab == 6 || tab == 8 || tab == 9) {
+        if (tab == 5 || tab == 6 || tab == 8 || tab == 9 || tab == 12) {
             val back = t("‹  Plus", 14f, Ui.PRIMARY, true)
             back.setPadding(0, dp(14), 0, 0)
             Ui.pressable(back) { go(7) }
@@ -538,6 +538,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             9 -> renderCrashes()
             10 -> renderPub()
             11 -> renderCodes()
+            12 -> renderAudit()
             else -> renderAccount()
         }
     }
@@ -556,6 +557,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         9 -> "Plantages de l'app"
         10 -> "Pub du jour"
         11 -> "Codes 1xBet"
+        12 -> "Audit complet"
         else -> "Mon compte"
     }
 
@@ -748,6 +750,8 @@ class KounadiaAdminActivity : AppCompatActivity() {
     }
 
     private fun renderMore() {
+        sectionTitle("Contrôle")
+        content.addView(menuCard(R.drawable.ic_shield, Ui.PRIMARY, "Audit complet", "Vérifie tout KOUNADIA en 1 minute, rapport à copier") { go(12) })
         sectionTitle("Gestion")
         val st = str(sec ?: JSONObject(), "status")
         val secCol = when (st) { "alerte" -> Ui.ERROR; "surveillance" -> Ui.WARNING; else -> Ui.SUCCESS }
@@ -2179,6 +2183,227 @@ class KounadiaAdminActivity : AppCompatActivity() {
         content.addView(note)
     }
 
+    // ---------- audit complet ----------
+
+    private data class Check(val level: Int, val title: String, val detail: String) // 0 bon, 1 à surveiller, 2 problème
+
+    private var audit: List<Check>? = null
+    private var auditReport = ""
+    private var auditRunning = false
+    private var auditStep = ""
+
+    private fun ageTxt(m: Int): String = when {
+        m < 60 -> "$m min"
+        m < 48 * 60 -> "${m / 60} h ${m % 60} min"
+        else -> "${m / 1440} jours"
+    }
+
+    /** Erreur notée par le robot il y a moins de [hours] heures (le texte commence par la date). */
+    private fun recentErr(v: String, hours: Int): Boolean {
+        if (v.isBlank() || v == "null") return false
+        val t = parseIso(v.take(24)) ?: return true
+        return System.currentTimeMillis() - t.time < hours * 3600000L
+    }
+
+    private fun runAudit() {
+        if (auditRunning) return
+        auditRunning = true
+        audit = null
+        auditStep = "Démarrage…"
+        render()
+        scope.launch {
+            val out = ArrayList<Check>()
+            val raw = StringBuilder()
+            val token = SessionStorage.getToken(this@KounadiaAdminActivity)
+            val hour = SimpleDateFormat("HH", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date()).toInt()
+            val today = dayStr(Date())
+            fun step(s: String) {
+                auditStep = s
+                if (tab == 12) render()
+            }
+
+            // 1. Serveur
+            step("Serveur KOUNADIA…")
+            val t0 = System.currentTimeMillis()
+            val srv = try { unwrapObj(api("GET", "/admin/kounadia/range?from=$today&to=$today")) } catch (e: Exception) { raw.append("serveur: ${e.message}\n"); null }
+            val ms = System.currentTimeMillis() - t0
+            raw.append("serveur: ${if (srv != null) "ok" else "erreur"} en $ms ms\n")
+            out.add(when {
+                srv == null -> Check(2, "Serveur (API)", "Le serveur ne répond pas : comptes, abonnements et statistiques peuvent être bloqués.")
+                ms > 8000 -> Check(1, "Serveur (API)", "Il répond, mais lentement (${ms / 1000} s). Normal s'il dormait (Render gratuit) ; sinon, à surveiller.")
+                else -> Check(0, "Serveur (API)", "Il répond en ${ms / 100 / 10.0} s.")
+            })
+
+            // 2. Robot et données
+            step("Robot et données…")
+            val r = withContext(Dispatchers.IO) { robotCall("GET", "$ROBOT/audit", token, null) }
+            val a = if (r?.first == 200) try { JSONObject(r.second) } catch (e: Exception) { null } else null
+            raw.append("robot: ${r?.first} ${a?.toString()?.take(3500) ?: r?.second?.take(300)}\n")
+            if (a == null) {
+                out.add(Check(2, "Robot KOUNADIA", "Le robot ne répond pas : direct, notifications et codes 1xBet peuvent être arrêtés."))
+            } else {
+                val rb = a.optJSONObject("robot") ?: JSONObject()
+                val next = if (rb.isNull("nextTickSec")) null else rb.optInt("nextTickSec")
+                out.add(if (next == null || next < -120) Check(2, "Robot KOUNADIA", "La boucle du robot semble arrêtée.")
+                else Check(0, "Robot KOUNADIA", "Actif · ${rb.optInt("clients")} téléphone(s) connecté(s) au direct · ${rb.optInt("devices")} téléphone(s) suivis."))
+                val src = str(rb, "src")
+                val fl = str(rb, "flSrc")
+                out.add(when {
+                    src == "ok" && (fl == "ok" || fl.isEmpty()) -> Check(0, "Sources du direct", "PrimaTips et footlive répondent.")
+                    src == "ok" -> Check(1, "Sources du direct", "PrimaTips répond, footlive non ($fl).")
+                    fl == "ok" -> Check(1, "Sources du direct", "PrimaTips ne répond pas : footlive prend le relais.")
+                    else -> Check(2, "Sources du direct", "Aucune source de direct ne répond : les scores en direct sont arrêtés.")
+                })
+                if (recentErr(str(rb, "fcmErr"), 3)) out.add(Check(1, "Envoi des notifications", "Erreur récente chez Firebase : ${str(rb, "fcmErr").take(160)}"))
+                else out.add(Check(0, "Envoi des notifications", "Pas d'erreur récente."))
+                val q = rb.optInt("queue")
+                if (q > 800) out.add(Check(1, "File des notifications", "$q notifications en attente : envoi en retard."))
+                if (recentErr(str(rb, "err"), 2)) out.add(Check(1, "Erreur du robot", str(rb, "err").take(200)))
+                if (recentErr(str(rb, "kickErr"), 2)) out.add(Check(1, "Relance des calculs", str(rb, "kickErr").take(200)))
+                if (recentErr(str(rb, "infoErr"), 24)) out.add(Check(1, "Infos personnalisées", str(rb, "infoErr").take(200)))
+                if (hour >= 6 && str(rb, "backupDay") != today) out.add(Check(1, "Sauvegarde de la base", "Pas encore faite aujourd'hui (dernière : ${str(rb, "backupDay").ifEmpty { "inconnue" }})."))
+                else if (hour >= 6) out.add(Check(0, "Sauvegarde de la base", "Faite aujourd'hui."))
+
+                val sc = a.optJSONObject("scores") ?: JSONObject()
+                val sa = if (sc.isNull("ageMin")) -1 else sc.optInt("ageMin")
+                out.add(when {
+                    !sc.optBoolean("ok") || sa < 0 -> Check(2, "Scores des matchs", "Fichier des scores illisible.")
+                    sa > 90 -> Check(2, "Scores des matchs", "Pas mis à jour depuis ${ageTxt(sa)}.")
+                    sa > 45 -> Check(1, "Scores des matchs", "Mis à jour il y a ${ageTxt(sa)} (normalement toutes les 15 à 30 min).")
+                    else -> Check(0, "Scores des matchs", "À jour (il y a ${ageTxt(sa)}) · ${sc.optInt("today")} matchs aujourd'hui, ${sc.optInt("live")} en direct.")
+                })
+                val ns = sc.optInt("noScore")
+                if (ns > 10) out.add(Check(1, "Matchs sans résultat", "$ns matchs commencés depuis plus de 3 h n'ont pas de score (source muette ou match reporté)."))
+                val flj = sc.optJSONObject("footlive")
+                if (flj == null) out.add(Check(1, "footlive", "Aucun complément footlive dans le dernier fichier des scores."))
+                else out.add(Check(0, "footlive", "${flj.optInt("added")} matchs ajoutés, ${flj.optInt("filled")} scores complétés."))
+
+                val v2 = a.optJSONObject("v2") ?: JSONObject()
+                val va = if (v2.isNull("ageMin")) -1 else v2.optInt("ageMin")
+                val vday = str(v2, "day")
+                out.add(when {
+                    !v2.optBoolean("ok") -> Check(2, "Coupons et Coups sûrs", "Fichier illisible.")
+                    hour >= 6 && vday != today -> Check(2, "Coupons et Coups sûrs", "Les coupons d'aujourd'hui ne sont pas calculés (dernier jour : ${vday.ifEmpty { "aucun" }}).")
+                    va > 120 -> Check(1, "Coupons et Coups sûrs", "Calcul ancien : il y a ${ageTxt(va)}.")
+                    else -> Check(0, "Coupons et Coups sûrs", "Coupons du ${frDay(vday.ifEmpty { today })} prêts (${(0 until (v2.optJSONArray("coupons")?.length() ?: 0)).joinToString(" ") { v2.getJSONArray("coupons").getString(it) }}).")
+                })
+                for ((k, lbl, max) in listOf(Triple("pronos", "Pronostics", 180), Triple("vip", "Coup sûr (ancien)", 180))) {
+                    val o = a.optJSONObject(k) ?: continue
+                    val m = if (o.isNull("ageMin")) -1 else o.optInt("ageMin")
+                    if (!o.optBoolean("ok") || m < 0) out.add(Check(1, lbl, "Fichier illisible."))
+                    else if (m > max) out.add(Check(1, lbl, "Pas mis à jour depuis ${ageTxt(m)}."))
+                }
+                val cd = a.optJSONObject("codes") ?: JSONObject()
+                out.add(if (str(cd, "day") == today && cd.optInt("n") > 0) Check(0, "Codes 1xBet", "${cd.optInt("n")} code(s) saisi(s) aujourd'hui.")
+                else Check(1, "Codes 1xBet", "Aucun code saisi pour aujourd'hui (Pubs › Codes coupons 1xBet)."))
+            }
+
+            // 3. Site
+            step("Site KOUNADIA…")
+            val v = withContext(Dispatchers.IO) { httpJson("$SITE/version.json") }
+            raw.append("site: ${v?.toString()?.take(200)}\n")
+            out.add(if (v == null) Check(2, "Site KOUNADIA", "Le site ne répond pas (téléchargement de l'app bloqué).")
+            else Check(0, "Site KOUNADIA", "En ligne · version ${str(v, "version")} proposée au téléchargement."))
+
+            // 4. Plantages
+            step("Plantages de l'app…")
+            val cr = try { unwrapObj(api("GET", "/admin/kounadia/crashes?days=1")) } catch (e: Exception) { null }
+            if (cr != null) {
+                val total = cr.optInt("total")
+                val items = cr.optJSONArray("items") ?: JSONArray()
+                var fatal = false
+                for (i in 0 until items.length()) if (items.getJSONObject(i).optBoolean("fatal")) fatal = true
+                out.add(when {
+                    total == 0 -> Check(0, "Plantages (24 h)", "Aucun plantage signalé.")
+                    fatal -> Check(2, "Plantages (24 h)", "$total plantage(s), dont des plantages bloquants. Détails dans le rapport.")
+                    else -> Check(1, "Plantages (24 h)", "$total erreur(s) non bloquante(s). Détails dans le rapport.")
+                })
+                raw.append("plantages: ${str(cr, "text").take(2500)}\n")
+            }
+
+            // 5. Sécurité
+            step("Sécurité…")
+            val sec2 = try { unwrapObj(api("GET", "/admin/security")) } catch (e: Exception) { null }
+            if (sec2 != null) {
+                sec = sec2
+                out.add(when (str(sec2, "status")) {
+                    "alerte" -> Check(2, "Sécurité", "Attaques ou tentatives suspectes récentes : ouvre Plus › Sécurité.")
+                    "surveillance" -> Check(1, "Sécurité", "Quelques tentatives suspectes : à surveiller (Plus › Sécurité).")
+                    else -> Check(0, "Sécurité", "Calme.")
+                })
+                raw.append("securite: ${sec2.toString().take(600)}\n")
+            }
+
+            // 6. Version de l'app
+            step("Version de l'app…")
+            val dl = withContext(Dispatchers.IO) { fetchDownloads() }
+            if (dl != null) {
+                downloads = dl
+                val sv = str(v ?: JSONObject(), "version")
+                val gv = str(dl, "ver")
+                out.add(if (sv.isNotEmpty() && gv.isNotEmpty() && sv != gv) Check(1, "Version de l'app", "GitHub : $gv · site : $sv. Le site n'a pas encore la dernière version.")
+                else Check(0, "Version de l'app", "Dernière version $gv · ${n(dl.optInt("total"))} téléchargements au total."))
+            }
+
+            out.sortByDescending { it.level }
+            val bad = out.count { it.level == 2 }
+            val warn = out.count { it.level == 1 }
+            val now = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.FRANCE).format(Date())
+            auditReport = buildString {
+                append("AUDIT KOUNADIA · $now\n")
+                append(if (bad == 0 && warn == 0) "Tout fonctionne.\n" else "$bad problème(s), $warn point(s) à surveiller.\n")
+                for (c in out) append("${listOf("✅", "⚠️", "❌")[c.level]} ${c.title} : ${c.detail}\n")
+                append("\n--- Détails techniques ---\n")
+                append(raw)
+            }
+            audit = out
+            auditRunning = false
+            if (tab == 12) render()
+        }
+    }
+
+    private fun renderAudit() {
+        val intro = card()
+        intro.addView(t("Audit complet de KOUNADIA", 15f, Ui.TEXT, true))
+        intro.addView(t("Vérifie le serveur, le robot, les scores, les coupons, footlive, les notifications, le site, les plantages et la sécurité. Dure environ 1 minute.", 13f, Ui.TEXT2).also { it.setPadding(0, dp(6), 0, 0) })
+        (intro.layoutParams as LinearLayout.LayoutParams).setMargins(0, dp(12), 0, 0)
+        content.addView(intro)
+        if (auditRunning) {
+            val c = card()
+            c.addView(t("Audit en cours · $auditStep", 13.5f, Ui.PRIMARY, true))
+            content.addView(c)
+            return
+        }
+        content.addView(Ui.button(this, if (audit == null) "Lancer l'audit" else "Relancer l'audit") { runAudit() })
+        val res = audit ?: return
+        val bad = res.count { it.level == 2 }
+        val warn = res.count { it.level == 1 }
+        val sum = card()
+        val col = if (bad > 0) Ui.ERROR else if (warn > 0) Ui.WARNING else Ui.SUCCESS
+        sum.background = Ui.rounded(this, Ui.withAlpha(col, 0x1F), 18, Ui.withAlpha(col, 0x66))
+        sum.addView(t(if (bad == 0 && warn == 0) "✅  Tout fonctionne" else "$bad problème(s) · $warn point(s) à surveiller", 16f, col, true))
+        sum.addView(t(
+            if (bad == 0 && warn == 0) "Aucune anomalie détectée."
+            else "Copie le rapport et envoie-le à Claude : il l'analysera et proposera les corrections.",
+            13f, Ui.TEXT,
+        ).also { it.setPadding(0, dp(6), 0, 0) })
+        (sum.layoutParams as LinearLayout.LayoutParams).setMargins(0, dp(14), 0, dp(4))
+        content.addView(sum)
+        content.addView(Ui.button(this, "Copier le rapport complet", "secondary") { copyText("Rapport d'audit", auditReport) })
+        sectionTitle("Détail")
+        for (ck in res) {
+            val c = card()
+            val head = LinearLayout(this)
+            head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.addView(t(listOf("✅", "⚠️", "❌")[ck.level], 16f, Ui.TEXT))
+            head.addView(t(ck.title, 14.5f, Ui.TEXT, true).also { it.setPadding(dp(8), 0, 0, 0) }, LinearLayout.LayoutParams(0, KW, 1f))
+            c.addView(head)
+            c.addView(t(ck.detail, 13f, Ui.TEXT2).also { it.setPadding(0, dp(6), 0, 0) })
+            content.addView(c)
+        }
+    }
+
     // ---------- codes 1xBet des coupons du jour ----------
 
     private val codeList = listOf(
@@ -2187,9 +2412,6 @@ class KounadiaAdminActivity : AppCompatActivity() {
         "vip2" to "Coupon VIP · cote 2",
         "vip3" to "Coupon VIP · cote 3",
         "vip5" to "Coupon VIP · cote 5",
-        "c2" to "Coups sûrs · coupon cote 2+",
-        "c5" to "Coups sûrs · coupon cote 5+",
-        "c10" to "Coups sûrs · coupon cote 10+",
     )
 
     /** Appel au robot KOUNADIA (code HTTP + texte), null sans connexion. */
@@ -2235,7 +2457,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 "2. Sur 1xBet, enregistre le coupon pour obtenir son code.\n" +
                 "3. Colle le code ici, puis touche « Enregistrer les codes ».\n\n" +
                 "Les utilisateurs voient le code sur la carte du coupon, avec un bouton « Copier », puis le chargent dans 1xBet. " +
-                "Single et coupon gratuit : visibles par tous. Coupons VIP et Coups sûrs : seulement par les abonnés Premium. " +
+                "Single et coupon gratuit : visibles par tous. Coupons VIP : seulement par les abonnés Premium. " +
                 "Les codes disparaissent d'eux-mêmes le lendemain.",
             13f, Ui.TEXT2,
         )
