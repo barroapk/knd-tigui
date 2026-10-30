@@ -1981,6 +1981,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         }
 
         renderCountries(false)
+        renderCodeStats()
 
         val features = s.optJSONArray("features") ?: JSONArray()
         if (features.length() > 0) {
@@ -2497,6 +2498,66 @@ class KounadiaAdminActivity : AppCompatActivity() {
         content.addView(c)
         val save = Ui.button(this, "Enregistrer les codes") { saveCodes(today, inputs.mapValues { it.value.text.toString() }) }
         content.addView(save)
+        renderCodeStats(true)
+    }
+
+    /** Codes 1xBet copiés par les utilisateurs : total et par catégorie, sur la période choisie (Audience). */
+    private fun renderCodeStats(fromCodes: Boolean = false) {
+        val o = range?.optJSONObject("codes")
+        if (o == null) {
+            if (fromCodes) {
+                sectionTitle("Codes copiés")
+                val c = card()
+                c.addView(t("Statistiques pas encore chargées. Ouvre Audience puis reviens ici.", 13f, Ui.TEXT2))
+                content.addView(c)
+            }
+            return
+        }
+        val total = o.optInt("total")
+        val users = o.optInt("users")
+        if (total == 0 && !fromCodes) return
+        sectionTitle("Codes 1xBet copiés · ${periodLabel()}")
+        content.addView(
+            pair(
+                kpi("Codes copiés", n(total), periodLabel(), Ui.PRIMARY),
+                kpi("Utilisateurs", n(users), if (users > 0) String.format(Locale.FRANCE, "%.1f copies chacun", total.toDouble() / users).replace(",0 ", " ") else "–", Ui.SUCCESS),
+            ),
+        )
+        val kinds = o.optJSONArray("kinds") ?: JSONArray()
+        val rows = ArrayList<Triple<String, Int, String>>()
+        val seen = HashSet<String>()
+        for (i in 0 until kinds.length()) {
+            val k = kinds.getJSONObject(i)
+            val key = str(k, "k")
+            seen.add(key)
+            val label = codeList.firstOrNull { it.first == key }?.second ?: if (key == "?") "Catégorie inconnue (anciennes copies)" else key
+            val nb = k.optInt("n")
+            val u = k.optInt("users")
+            val pc = if (total > 0) Math.round(nb * 100.0 / total).toInt() else 0
+            rows.add(Triple(label, nb, "$pc % · ${plural(u, "utilisateur", "utilisateurs")}"))
+        }
+        for ((key, label) in codeList) if (key !in seen) rows.add(Triple(label, 0, "aucune copie"))
+        content.addView(rankCard(rows))
+        val daily = o.optJSONArray("daily") ?: JSONArray()
+        if (daily.length() > 1) {
+            val c = card()
+            c.addView(t("Copies par jour", 13f, Ui.TEXT, true))
+            val labels = ArrayList<String>()
+            val values = ArrayList<Int>()
+            for (i in 0 until daily.length()) {
+                val d = daily.getJSONObject(i)
+                val day = str(d, "day")
+                labels.add(if (day.length >= 10) day.substring(8, 10) + "/" + day.substring(5, 7) else day)
+                values.add(d.optInt("n"))
+            }
+            c.addView(KndDailyChart(this, labels, values), LinearLayout.LayoutParams(KM, dp(130)))
+            content.addView(c)
+        }
+        if (fromCodes) {
+            val note = t("Période : ${periodLabel()}. Pour une autre période, change-la dans Audience.", 11.5f, Ui.TEXT2)
+            note.setPadding(dp(4), 0, 0, dp(4))
+            content.addView(note)
+        }
     }
 
     private fun saveCodes(day: String, values: Map<String, String>) {
