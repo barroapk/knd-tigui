@@ -2064,6 +2064,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         "week" -> "Semaine"
         "month" -> "Mois"
         "year" -> "Année"
+        "quarter" -> "3 mois"
         else -> p
     }
 
