@@ -2532,6 +2532,14 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 kpi("Ouvertes sur YouTube", n(o.optInt("web")), "fenêtre YouTube dans l'app", Ui.TEXT2),
             ),
         )
+        if (o.optInt("region") > 0) {
+            content.addView(
+                pair(
+                    kpi("Bloquées dans le pays", n(o.optInt("region")), "vidéo interdite dans le pays de l'utilisateur", Ui.ERROR),
+                    kpi("Vidéos de secours", n(o.optInt("alts")), "passages automatiques à une autre vidéo", Ui.TEXT2),
+                ),
+            )
+        }
         fun ranks(key: String, title: String, label: (String) -> String) {
             val a = o.optJSONArray(key) ?: return
             if (a.length() == 0) return
