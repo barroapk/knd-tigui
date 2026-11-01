@@ -1982,6 +1982,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
 
         renderCountries(false)
         renderCodeStats()
+        renderHlStats()
 
         val features = s.optJSONArray("features") ?: JSONArray()
         if (features.length() > 0) {
@@ -2499,6 +2500,94 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val save = Ui.button(this, "Enregistrer les codes") { saveCodes(today, inputs.mapValues { it.value.text.toString() }) }
         content.addView(save)
         renderCodeStats(true)
+    }
+
+    private fun dur(sec: Int): String = when {
+        sec < 60 -> "$sec s"
+        sec < 3600 -> "${sec / 60} min ${sec % 60} s"
+        else -> "${sec / 3600} h ${(sec % 3600) / 60} min"
+    }
+
+    /** Lecteur des temps forts : ouvertures, lectures, temps regardé, modes, vitesses, matchs les plus vus. */
+    private fun renderHlStats() {
+        val o = range?.optJSONObject("highlights") ?: return
+        val opens = o.optInt("opens")
+        if (opens == 0) return
+        sectionTitle("Temps forts (vidéos) · ${periodLabel()}")
+        content.addView(
+            pair(
+                kpi("Vidéos ouvertes", n(opens), plural(o.optInt("users"), "utilisateur", "utilisateurs"), Ui.PRIMARY),
+                kpi("Lectures réussies", n(o.optInt("plays")), plural(o.optInt("watchers"), "spectateur", "spectateurs"), Ui.SUCCESS),
+            ),
+        )
+        content.addView(
+            pair(
+                kpi("Temps regardé", dur(o.optInt("secs")), "${n(o.optInt("sessions"))} séances", Ui.TEXT),
+                kpi("Durée moyenne", dur(o.optInt("avg")), "par vidéo regardée", Ui.TEXT2),
+            ),
+        )
+        content.addView(
+            pair(
+                kpi("Vidéos bloquées", n(o.optInt("errors")), "${n(o.optInt("altPlays"))} sauvées par une vidéo de secours", Ui.WARNING),
+                kpi("Ouvertes sur YouTube", n(o.optInt("web")), "fenêtre YouTube dans l'app", Ui.TEXT2),
+            ),
+        )
+        fun ranks(key: String, title: String, label: (String) -> String) {
+            val a = o.optJSONArray(key) ?: return
+            if (a.length() == 0) return
+            val rows = ArrayList<Triple<String, Int, String>>()
+            for (i in 0 until a.length()) {
+                val x = a.getJSONObject(i)
+                rows.add(Triple(label(str(x, "k")), x.optInt("n"), ""))
+            }
+            val h = t(title, 13f, Ui.TEXT, true)
+            h.setPadding(dp(4), dp(10), 0, dp(4))
+            content.addView(h)
+            content.addView(rankCard(rows))
+        }
+        ranks("src", "Ouvertes depuis") {
+            when (it) {
+                "carte" -> "Cartes des grands matchs"
+                "liste" -> "Liste Temps forts"
+                else -> "Autre"
+            }
+        }
+        ranks("modes", "Modes de lecture") {
+            when (it) {
+                "mini" -> "Petite fenêtre"
+                "full" -> "Plein écran"
+                "pip" -> "Fenêtre flottante (hors de l'app)"
+                else -> it
+            }
+        }
+        ranks("rates", "Vitesses choisies") { it.removeSuffix(".0") + "x" }
+        val top = o.optJSONArray("top")
+        if (top != null && top.length() > 0) {
+            val rows = ArrayList<Triple<String, Int, String>>()
+            for (i in 0 until top.length()) {
+                val x = top.getJSONObject(i)
+                rows.add(Triple(str(x, "m").ifEmpty { "?" }, x.optInt("opens"), "${plural(x.optInt("users"), "utilisateur", "utilisateurs")} · ${dur(x.optInt("secs"))} regardées"))
+            }
+            val h = t("Matchs les plus regardés", 13f, Ui.TEXT, true)
+            h.setPadding(dp(4), dp(10), 0, dp(4))
+            content.addView(h)
+            content.addView(rankCard(rows))
+        }
+        val daily = o.optJSONArray("daily") ?: JSONArray()
+        if (daily.length() > 1) {
+            val c = card()
+            c.addView(t("Vidéos ouvertes par jour", 13f, Ui.TEXT, true))
+            val labels = ArrayList<String>()
+            val values = ArrayList<Int>()
+            for (i in 0 until daily.length()) {
+                val d = daily.getJSONObject(i)
+                val day = str(d, "day")
+                labels.add(if (day.length >= 10) day.substring(8, 10) + "/" + day.substring(5, 7) else day)
+                values.add(d.optInt("n"))
+            }
+            c.addView(KndDailyChart(this, labels, values), LinearLayout.LayoutParams(KM, dp(130)))
+            content.addView(c)
+        }
     }
 
     /** Codes 1xBet copiés par les utilisateurs : total et par catégorie, sur la période choisie (Audience). */
