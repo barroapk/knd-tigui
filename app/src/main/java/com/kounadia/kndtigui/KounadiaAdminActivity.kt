@@ -91,6 +91,11 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private var robot: JSONObject? = null
     private var site: JSONObject? = null
     private var engineInfo: JSONObject? = null
+    // Corrections : vidéos des temps forts, retraits gardés par le robot, dernier retrait (pour l'annuler).
+    private var hlFeed: JSONObject? = null
+    private var corr: JSONObject? = null
+    private var fixLoading = false
+    private var lastFix: Pair<String, String>? = null
     private val devResults = HashMap<String, Pair<String, Int>>()
     private var secLoading = false
     // Plantages de l'app KOUNADIA (boîte noire)
@@ -505,6 +510,12 @@ class KounadiaAdminActivity : AppCompatActivity() {
             Ui.pressable(back) { go(4) }
             content.addView(back)
         }
+        if (tab == 13) {
+            val back = t("‹  Accueil", 14f, Ui.PRIMARY, true)
+            back.setPadding(0, dp(14), 0, 0)
+            Ui.pressable(back) { go(0) }
+            content.addView(back)
+        }
         if (tab == 5 || tab == 6 || tab == 8 || tab == 9 || tab == 12) {
             val back = t("‹  Plus", 14f, Ui.PRIMARY, true)
             back.setPadding(0, dp(14), 0, 0)
@@ -544,6 +555,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             10 -> renderPub()
             11 -> renderCodes()
             12 -> renderAudit()
+            13 -> renderFix()
             else -> renderAccount()
         }
     }
@@ -563,6 +575,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         10 -> "Pub du jour"
         11 -> "Codes 1xBet"
         12 -> "Audit complet"
+        13 -> "Corriger"
         else -> "Mon compte"
     }
 
@@ -575,6 +588,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             newTab == 9 -> loadCrashes()
             newTab == 10 -> loadPub()
             newTab == 11 -> loadCodes()
+            newTab == 13 -> loadFix()
             else -> render()
         }
         scroll.post { scroll.scrollTo(0, 0) }
@@ -618,7 +632,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             Triple("Plus", R.drawable.ic_grid, 7),
         )
         val current = when (tab) {
-            0 -> 0
+            0, 13 -> 0
             1, 3 -> 1
             2 -> 2
             4, 10, 11 -> 4
@@ -818,6 +832,155 @@ class KounadiaAdminActivity : AppCompatActivity() {
         upd.setPadding(0, dp(10), 0, 0)
         c3.addView(upd)
         content.addView(c3)
+        content.addView(menuCard(R.drawable.ic_grid, Ui.WARNING, "Corriger", "Retirer un fait faux ou une mauvaise vidéo") { go(13) })
+    }
+
+    // ---------- corrections : faits du jour et vidéos des temps forts ----------
+
+    /** Date ISO (UTC) de moins de 3 jours. */
+    private fun recentIso(iso: String): Boolean = try {
+        val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US)
+        f.timeZone = TimeZone.getTimeZone("UTC")
+        val d = f.parse(iso.take(16))
+        d != null && System.currentTimeMillis() - d.time < 3L * 86400000L
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun loadFix() {
+        fixLoading = true
+        render()
+        scope.launch {
+            val now = System.currentTimeMillis() / 60000
+            hlFeed = withContext(Dispatchers.IO) { httpJson("https://raw.githubusercontent.com/barroapk/kfeed/hl/hl.json?t=$now") } ?: hlFeed
+            engineInfo = withContext(Dispatchers.IO) { httpJson("$ENGINE_URL?t=$now") } ?: engineInfo
+            corr = withContext(Dispatchers.IO) { httpJson("$ROBOT/corrections") } ?: corr
+            fixLoading = false
+            if (tab == 13) render()
+        }
+    }
+
+    private fun sendFix(type: String, key: String, undo: Boolean) {
+        val token = SessionStorage.getToken(this)
+        if (token == null) {
+            toast("Session expirée, reconnecte-toi.")
+            return
+        }
+        toast(if (undo) "Annulation…" else "Retrait…")
+        scope.launch {
+            val body = JSONObject().put("type", type).put("key", key)
+            if (undo) body.put("undo", true)
+            val r = withContext(Dispatchers.IO) { robotCall("POST", "$ROBOT/corrections", token, body) }
+            when (r?.first) {
+                200 -> {
+                    corr = try { JSONObject(r.second) } catch (e: Exception) { corr }
+                    lastFix = if (undo) null else Pair(type, key)
+                    toast(if (undo) "Remis : visible dans l'app d'ici 5 minutes" else "Retiré : l'app sera à jour d'ici 5 minutes")
+                    if (tab == 13) render()
+                }
+                401, 403 -> toast("Accès refusé : reconnecte-toi.")
+                400 -> toast("Demande refusée.")
+                else -> toast("Pas de connexion. Réessaie.")
+            }
+        }
+    }
+
+    private fun askFix(type: String, key: String, what: String) {
+        AlertDialog.Builder(this)
+            .setTitle(if (type == "hl") "Retirer cette vidéo ?" else "Retirer ce fait ?")
+            .setMessage(what)
+            .setNegativeButton("Annuler", null)
+            .setPositiveButton("Retirer") { _, _ -> sendFix(type, key, false) }
+            .show()
+    }
+
+    /** Carte d'un élément à corriger : titre, détail, boutons « Voir » (si possible) et « Retirer ». */
+    private fun fixRow(title: String, sub: String, onOpen: (() -> Unit)? = null, onRemove: () -> Unit): View {
+        val c = card()
+        c.addView(t(title, 14.5f, Ui.TEXT, true))
+        val d = t(sub, 12.5f, Ui.TEXT2)
+        d.maxLines = 3
+        d.setPadding(0, dp(4), 0, 0)
+        c.addView(d)
+        val btns = LinearLayout(this)
+        btns.orientation = LinearLayout.HORIZONTAL
+        btns.setPadding(0, dp(10), 0, 0)
+        if (onOpen != null) {
+            btns.addView(smallButton("Voir", Ui.PRIMARY, onOpen), LinearLayout.LayoutParams(0, KW, 1f))
+            btns.addView(View(this), LinearLayout.LayoutParams(dp(10), 1))
+        }
+        btns.addView(smallButton("Retirer", Ui.ERROR, onRemove), LinearLayout.LayoutParams(0, KW, 1f))
+        c.addView(btns)
+        return c
+    }
+
+    private fun renderFix() {
+        if (fixLoading && engineInfo == null && hlFeed == null) {
+            loadingCard()
+            return
+        }
+        val nf = corr?.optJSONArray("facts")?.length() ?: 0
+        val nh = corr?.optJSONArray("hl")?.length() ?: 0
+        val info = card()
+        info.addView(t("Retire un fait faux ou une vidéo qui ne correspond pas au match. L'app est à jour d'ici 5 minutes et le moteur ne le reprend plus (un autre fait ou une autre vidéo prend sa place).", 13f, Ui.TEXT2))
+        kv(info, "Retirés (7 derniers jours)", "$nf fait(s) · $nh vidéo(s)")
+        val lf = lastFix
+        if (lf != null) {
+            val u = smallButton("Annuler le dernier retrait", Ui.PRIMARY) { sendFix(lf.first, lf.second, true) }
+            val lp = LinearLayout.LayoutParams(KM, KW)
+            lp.setMargins(0, dp(10), 0, 0)
+            u.layoutParams = lp
+            info.addView(u)
+        }
+        content.addView(info)
+        // Faits du jour publiés.
+        sectionTitle("Faits du jour")
+        val list = engineInfo?.optJSONArray("list")
+        if (list == null || list.length() == 0) {
+            val c = card()
+            c.addView(t("Aucun fait publié pour le moment.", 13f, Ui.TEXT2))
+            content.addView(c)
+        } else {
+            for (i in 0 until list.length()) {
+                val f = list.optJSONObject(i) ?: continue
+                val key = str(f, "key")
+                val txt = str(f, "fr")
+                if (key.isEmpty() || txt.isEmpty()) continue
+                content.addView(fixRow("${str(f, "h")} – ${str(f, "a")} · ${hhmm(str(f, "d"))}", txt) { askFix("fact", key, txt) })
+            }
+        }
+        // Vidéos des temps forts (3 derniers jours).
+        sectionTitle("Temps forts (3 derniers jours)")
+        val v = hlFeed?.optJSONObject("v")
+        val rows = mutableListOf<Pair<String, JSONObject>>()
+        if (v != null) {
+            val keys = v.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val o = v.optJSONObject(k) ?: continue
+                if (recentIso(str(o, "d"))) rows.add(Pair(k, o))
+            }
+        }
+        rows.sortByDescending { str(it.second, "d") }
+        if (rows.isEmpty()) {
+            val c = card()
+            c.addView(t("Aucune vidéo pour le moment.", 13f, Ui.TEXT2))
+            content.addView(c)
+        }
+        for ((id, o) in rows) {
+            val vid = str(o, "v")
+            if (vid.isEmpty()) continue
+            val score = str(o, "s")
+            val title = "${str(o, "h")} – ${str(o, "a")}" + if (score.isNotEmpty()) " ($score)" else ""
+            val sub = "${str(o, "t")}\n${str(o, "c")} · ${str(o, "l")}"
+            content.addView(fixRow(title, sub, onOpen = {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=$vid")))
+                } catch (e: Exception) {
+                    toast("Impossible d'ouvrir la vidéo.")
+                }
+            }) { askFix("hl", "$id:$vid", "$title\n${str(o, "t")}") })
+        }
     }
 
     // ---------- page « Plus » ----------
