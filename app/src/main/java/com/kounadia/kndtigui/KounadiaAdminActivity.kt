@@ -55,6 +55,8 @@ import java.util.TimeZone
 private const val KM = ViewGroup.LayoutParams.MATCH_PARENT
 private const val KW = ViewGroup.LayoutParams.WRAP_CONTENT
 private const val PUB_BASE = "https://raw.githubusercontent.com/barroapk/kfeed/pub"
+// Résumé du moteur KOUNADIA (public, sans pronostic) : infos d'avant 05:00, coupons VIP, faits du jour, réussite.
+private const val ENGINE_URL = "https://raw.githubusercontent.com/barroapk/kfeed/admin/admin.json"
 
 /** Onglet KOUNADIA : statistiques d'usage de l'application et gestion des publicités. */
 class KounadiaAdminActivity : AppCompatActivity() {
@@ -88,6 +90,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private lateinit var nav: LinearLayout
     private var robot: JSONObject? = null
     private var site: JSONObject? = null
+    private var engineInfo: JSONObject? = null
     private val devResults = HashMap<String, Pair<String, Int>>()
     private var secLoading = false
     // Plantages de l'app KOUNADIA (boîte noire)
@@ -318,6 +321,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
                 sec = try { unwrapObj(api("GET", "/admin/security")) } catch (e: Exception) { sec }
                 robot = withContext(Dispatchers.IO) { httpJson("$ROBOT/") } ?: robot
                 site = withContext(Dispatchers.IO) { httpJson("$SITE/version.json") } ?: site
+                engineInfo = withContext(Dispatchers.IO) { httpJson("$ENGINE_URL?t=${System.currentTimeMillis() / 60000}") } ?: engineInfo
                 ads = fetchAds()
                 loadImages()
                 if (range == null) error = "Les statistiques n'ont pas pu être chargées. Touche ↻ pour réessayer."
@@ -521,6 +525,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         when (tab) {
             0 -> {
                 renderStatusStrip()
+                renderEngine()
                 renderOverview()
             }
             1 -> {
@@ -716,6 +721,103 @@ class KounadiaAdminActivity : AppCompatActivity() {
             tile("Robot direct", if (robotOk()) "Actif" else "À vérifier", if (robotOk()) "$live match(s) suivis" else "scores et notifications", if (robotOk()) Ui.SUCCESS else Ui.WARNING) { go(8) },
             tile("Version publiée", if (ver.isBlank()) "—" else ver, "sur le site", Ui.PRIMARY) { go(8) },
         ))
+    }
+
+    // ---------- moteur KOUNADIA (résumé public, sans pronostic) ----------
+
+    /** Heure locale « HH:mm » d'une date ISO (UTC). */
+    private fun hhmm(iso: String): String = try {
+        val f = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US)
+        f.timeZone = TimeZone.getTimeZone("UTC")
+        val d = f.parse(iso.take(16))
+        if (d == null) "—" else SimpleDateFormat("HH:mm", Locale.FRANCE).format(d)
+    } catch (e: Exception) {
+        "—"
+    }
+
+    /** Une ligne « libellé ......... valeur » dans une carte. */
+    private fun kv(parent: LinearLayout, label: String, value: String, color: Int = Ui.TEXT) {
+        val r = LinearLayout(this)
+        r.orientation = LinearLayout.HORIZONTAL
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(8), 0, 0)
+        r.addView(t(label, 13f, Ui.TEXT2), LinearLayout.LayoutParams(0, KW, 1f))
+        r.addView(t(value, 13f, color, true))
+        parent.addView(r)
+    }
+
+    private fun renderEngine() {
+        val e = engineInfo ?: return
+        sectionTitle("Moteur KOUNADIA")
+        val day = str(e, "day")
+        // 1. Infos collectées avant la publication des coupons (05:00).
+        val i = e.optJSONObject("intel")
+        val iDay = if (i == null) "" else str(i, "day")
+        val iAt = if (i == null) "" else str(i, "at")
+        val hour = if (iAt.length >= 13) iAt.substring(11, 13).toIntOrNull() ?: 99 else 99
+        val ok = i != null && iDay == day && hour < 5
+        val c = card()
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.addView(t("Infos d'avant 05:00", 15.5f, Ui.TEXT, true), LinearLayout.LayoutParams(0, KW, 1f))
+        val col = if (ok) Ui.SUCCESS else if (i != null && iDay == day) Ui.WARNING else Ui.ERROR
+        val badge = t(if (ok) "À l'heure" else if (i != null && iDay == day) "En retard" else "Absentes", 12f, col, true)
+        badge.setPadding(dp(10), dp(4), dp(10), dp(4))
+        badge.background = Ui.rounded(this, Ui.withAlpha(col, 0x26), 10)
+        head.addView(badge)
+        c.addView(head)
+        if (i != null && iDay == day) {
+            kv(c, "Collecte", "${hhmm(iAt)} · ${i.optInt("matches")} matchs")
+            kv(c, "Cotes Pinnacle · 1xBet", "${i.optInt("pin")} · ${i.optInt("x1")}")
+            kv(c, "Matchs avec absents", "${i.optInt("abs")} · ${i.optInt("absBig")} avec 3 absents ou +")
+            kv(c, "Actualités lues", "${i.optInt("news")} équipes · ${i.optInt("alerts")} alerte(s)", if (i.optInt("alerts") > 0) Ui.WARNING else Ui.TEXT)
+            kv(c, "Matchs reliés au moteur", "${i.optInt("linked")}")
+            val req = if (i.isNull("requests")) "—" else i.optInt("requests").toString()
+            kv(c, "Demandes · erreurs", "$req · ${i.optInt("errors")}", if (i.optInt("errors") > 0) Ui.WARNING else Ui.TEXT)
+        } else {
+            val m = t("Pas de collecte aujourd'hui avant 05:00 : les coupons ont été faits sans ces infos.", 13f, Ui.TEXT2)
+            m.setPadding(0, dp(8), 0, 0)
+            c.addView(m)
+        }
+        content.addView(c)
+        // 2. Coupons VIP du jour (calculés puis figés) : cote, nombre de matchs, matchs avec infos.
+        val cp = e.optJSONObject("coupons")
+        if (cp != null) {
+            val c2 = card()
+            c2.addView(t("Coupons VIP du jour", 15.5f, Ui.TEXT, true))
+            val at = str(cp, "at")
+            if (at.isNotEmpty()) c2.addView(t("Calculés à ${hhmm(at)}, puis figés", 12.5f, Ui.TEXT2))
+            for ((k, label) in listOf("vip2" to "Cote 2", "vip3" to "Cote 3", "vip5" to "Cote 5")) {
+                val v = cp.optJSONObject(k)
+                if (v == null) {
+                    kv(c2, label, "Aucun", Ui.WARNING)
+                } else {
+                    val odd = String.format(Locale.FRANCE, "%.2f", v.optDouble("odd"))
+                    kv(c2, label, "@$odd · ${v.optInt("n")} matchs · ${v.optInt("intel")} avec infos")
+                }
+            }
+            content.addView(c2)
+        }
+        // 3. Faits du jour et réussite sur 14 jours.
+        val c3 = card()
+        c3.addView(t("Faits du jour et réussite (14 jours)", 15.5f, Ui.TEXT, true))
+        val f = e.optJSONObject("facts")
+        if (f != null) kv(c3, "Faits publiés", "${f.optInt("n")} · ${f.optInt("with12")} matchs avec 12 résultats")
+        val rt = e.optJSONObject("rates")
+        for ((k, label) in listOf("vip2" to "VIP cote 2", "vip3" to "VIP cote 3", "vip5" to "VIP cote 5", "free" to "Coupon gratuit", "single" to "Single du jour", "big" to "Grands matchs")) {
+            val r = rt?.optJSONObject(k) ?: continue
+            val w = r.optInt("w")
+            val n = w + r.optInt("l")
+            if (n == 0) continue
+            val pct = if (r.isNull("pct")) "—" else "${r.optDouble("pct")} %"
+            kv(c3, label, "$w/$n · $pct", if (r.optDouble("pct", 0.0) >= 60) Ui.SUCCESS else Ui.TEXT)
+        }
+        kv(c3, "Lignes d'apprentissage", "${e.optInt("learn")}")
+        val upd = t("Mis à jour à ${hhmm(str(e, "at"))}", 12f, Ui.TEXT2)
+        upd.setPadding(0, dp(10), 0, 0)
+        c3.addView(upd)
+        content.addView(c3)
     }
 
     // ---------- page « Plus » ----------
