@@ -2156,6 +2156,9 @@ class KounadiaAdminActivity : AppCompatActivity() {
         "ad_view" -> "Publicités vues"
         "ad_click" -> "Clics sur une publicité"
         "code_copy" -> "Codes 1xBet copiés"
+        "facts_seen" -> "Bandeau Faits du jour vu"
+        "facts_open" -> "Liste des faits du jour ouverte"
+        "facts_swipe" -> "Bandeau des faits glissé au doigt"
         else -> name
     }
 
@@ -2248,6 +2251,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         renderCountries(false)
         renderCodeStats()
         renderHlStats()
+        renderFactsStats(s)
 
         val features = s.optJSONArray("features") ?: JSONArray()
         if (features.length() > 0) {
@@ -2774,6 +2778,44 @@ class KounadiaAdminActivity : AppCompatActivity() {
     }
 
     /** Lecteur des temps forts : ouvertures, lectures, temps regardé, modes, vitesses, matchs les plus vus. */
+    /** Faits du jour : bandeau vu (utilisateurs différents), liste ouverte, taux d'ouverture. */
+    private fun renderFactsStats(a: JSONObject) {
+        val fa = a.optJSONArray("features") ?: JSONArray()
+        var seenN = 0
+        var seenU = 0
+        var openN = 0
+        var openU = 0
+        var swipeU = 0
+        for (i in 0 until fa.length()) {
+            val o = fa.optJSONObject(i) ?: continue
+            when (str(o, "name")) {
+                "facts_seen" -> { seenN = o.optInt("count"); seenU = o.optInt("users") }
+                "facts_open" -> { openN = o.optInt("count"); openU = o.optInt("users") }
+                "facts_swipe" -> swipeU = o.optInt("users")
+            }
+        }
+        sectionTitle("Faits du jour · ${periodLabel()}")
+        if (seenN == 0) {
+            val c = card()
+            c.addView(t("Pas encore de chiffres : ils arrivent avec la nouvelle version de l'app, dès que les utilisateurs l'installent.", 13f, Ui.TEXT2))
+            content.addView(c)
+            return
+        }
+        val rate = if (seenU > 0) openU * 100.0 / seenU else 0.0
+        content.addView(
+            pair(
+                kpi("Bandeau vu", n(seenU), "utilisateurs · ${n(seenN)} ouvertures de l'app", Ui.PRIMARY),
+                kpi("Liste ouverte", n(openN), "${n(openU)} utilisateurs", Ui.SUCCESS),
+            ),
+        )
+        content.addView(
+            pair(
+                kpi("Taux d'ouverture", String.format(Locale.FRANCE, "%.1f %%", rate), "ouvrent la liste après avoir vu le bandeau", if (rate >= 10) Ui.SUCCESS else Ui.WARNING),
+                kpi("Glissé au doigt", n(swipeU), "utilisateurs qui font défiler eux-mêmes", Ui.TEXT2),
+            ),
+        )
+    }
+
     private fun renderHlStats() {
         val o = range?.optJSONObject("highlights") ?: return
         val opens = o.optInt("opens")
