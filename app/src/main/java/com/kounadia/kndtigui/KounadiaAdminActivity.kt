@@ -802,7 +802,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
             c2.addView(t("Coupons VIP du jour", 15.5f, Ui.TEXT, true))
             val at = str(cp, "at")
             if (at.isNotEmpty()) c2.addView(t("Calculés à ${hhmm(at)}, puis figés", 12.5f, Ui.TEXT2))
-            for ((k, label) in listOf("vip1" to "Sûr 80 %", "vip2" to "Cote 2", "vip3" to "Cote 3", "vip5" to "Cote 5")) {
+            for ((k, label) in listOf("vip1" to "Sûr", "vip2" to "Cote 2", "vip3" to "Cote 3", "vip5" to "Cote 5")) {
                 val v = cp.optJSONObject(k)
                 if (v == null) {
                     kv(c2, label, "Aucun", Ui.WARNING)
@@ -819,7 +819,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
         val f = e.optJSONObject("facts")
         if (f != null) kv(c3, "Faits publiés", "${f.optInt("n")} · ${f.optInt("with12")} matchs avec 12 résultats")
         val rt = e.optJSONObject("rates")
-        for ((k, label) in listOf("vip1" to "VIP Sûr 80 %", "vip2" to "VIP cote 2", "vip3" to "VIP cote 3", "vip5" to "VIP cote 5", "free" to "Coupon gratuit", "single" to "Single du jour", "big" to "Grands matchs")) {
+        for ((k, label) in listOf("vip1" to "VIP Sûr", "vip2" to "VIP cote 2", "vip3" to "VIP cote 3", "vip5" to "VIP cote 5", "free" to "Coupon gratuit", "single" to "Single du jour", "big" to "Grands matchs")) {
             val r = rt?.optJSONObject(k) ?: continue
             val w = r.optInt("w")
             val n = w + r.optInt("l")
@@ -2681,7 +2681,7 @@ class KounadiaAdminActivity : AppCompatActivity() {
     private val codeList = listOf(
         "single" to "Single du jour",
         "free" to "Coupon gratuit",
-        "vip1" to "Coupon VIP · Sûr 80 %",
+        "vip1" to "Coupon VIP · Sûr",
         "vip2" to "Coupon VIP · cote 2",
         "vip3" to "Coupon VIP · cote 3",
         "vip5" to "Coupon VIP · cote 5",
